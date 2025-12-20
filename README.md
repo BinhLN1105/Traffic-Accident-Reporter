@@ -1,6 +1,6 @@
 # 🚦 Traffic Accident AI Reporter
 
-> **A Next-Gen Traffic Incident Monitoring System powered by YOLOv8 and Google Gemini 2.0 AI.**
+> **Hệ Thống Giám Sát Tai Nạn Giao Thông Thế Hệ Mới, được hỗ trợ bởi YOLOv8 và Google Gemini 2.0 AI.**
 
 ![Project Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
 ![Java](https://img.shields.io/badge/Backend-Spring%20Boot-green?style=flat-square&logo=springboot)
@@ -8,52 +8,52 @@
 ![AI](https://img.shields.io/badge/Intelligence-Google%20Gemini%202.0-orange?style=flat-square&logo=google)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square)
 
-## 📖 Overview
+## 📖 Tổng Quan
 
-**Traffic Accident Reporter** is an automated system designed to detect, analyze, and report traffic incidents in real-time. By combining the speed of computer vision (**YOLOv8**) with the cognitive analysis capabilities of **Generative AI (Gemini 2.0)**, the system not only identifies accidents but also understands them—providing detailed reports on severity, causes, and recommended handling.
+**Traffic Accident Reporter** là một hệ thống tự động được thiết kế để phát hiện, phân tích và báo cáo các sự cố giao thông theo thời gian thực. Bằng cách kết hợp tốc độ của thị giác máy tính (**YOLOv8**) với khả năng phân tích nhận thức của **Generative AI (Gemini 2.0)**, hệ thống không chỉ xác định được tai nạn mà còn "hiểu" được chúng—cung cấp các báo cáo chi tiết về mức độ nghiêm trọng, nguyên nhân và đề xuất hướng xử lý.
 
-The system features a **Robust Fallback Mechanism** ensuring 99.9% availability even when AI services are overloaded, utilizing a smart chain of models (`Gemini 2.0 Flash` → `Gemini 1.5 Flash 8b` → `Gemini 2.5`).
-
----
-
-## ✨ Key Features
-
-- **📹 Real-time Detection**: Automatically detects accidents using YOLOv8 computer vision models.
-- **🧠 AI-Powered Analysis**:
-  - Generates comprehensive incident reports using **Google Gemini**.
-  - Analyzes the "Impact Moment" (Key Frame) to determine fault and severity.
-  - Suggests immediate actions (e.g., "Call Ambulance", "Notify Police").
-- **🛡️ Smart Retry & Fallback**:
-  - Intelligent system handles API Overloads (503) and Quota Limits (429).
-  - Auto-switches between high-performance and high-availability models.
-- **📉 Optimized Performance**:
-  - Uses "Single Key Frame" technology to minimize data usage while maximizing analysis accuracy.
-- **🖥️ Live Dashboard**: A user-friendly web interface to view live processed videos and AI reports.
+Hệ thống sở hữu **Cơ Chế Dự Phòng Mạnh Mẽ (Robust Fallback Mechanism)**, đảm bảo khả năng hoạt động 99.9% ngay cả khi dịch vụ AI bị quá tải, nhờ chuỗi mô hình thông minh (`Gemini 2.0 Flash` → `Gemini 1.5 Flash 8b` → `Gemini 2.5`).
 
 ---
 
-## 🏗️ System Architecture
+## ✨ Tính Năng Chính
 
-The project consists of three main components working in harmony:
-
-1.  **Backend (Java Spring Boot)**: The central orchestrator. Manages API endpoints, database storage (MySQL), and coordinates between the user and the AI service.
-2.  **AI Client (Python)**: The "Vision" layer. Runs YOLOv8 for object detection and handles video processing (snapshotting, formatting).
-3.  **Frontend (Vanilla JS/HTML)**: A lightweight, responsive dashboard for end-users.
+- **📹 Phát Hiện Thời Gian Thực**: Tự động phát hiện tai nạn sử dụng mô hình thị giác máy tính YOLOv8.
+- **🧠 Phân Tích Bằng AI**:
+  - Tạo báo cáo sự cố toàn diện bằng **Google Gemini**.
+  - Phân tích "Thời Điểm Va Chạm" (Impact Moment) để xác định lỗi và mức độ nghiêm trọng.
+  - Đề xuất hành động tức thời (ví dụ: "Gọi Cứu Thương", "Báo Cảnh Sát").
+- **🛡️ Tự Động Thử Lại & Dự Phòng**:
+  - Hệ thống thông minh xử lý lỗi Quá Tải API (503) và Giới Hạn Quota (429).
+  - Tự động chuyển đổi giữa các mô hình hiệu năng cao và mô hình khả dụng cao.
+- **📉 Tối Ưu Hóa Hiệu Suất**:
+  - Sử dụng công nghệ "Single Key Frame" để giảm thiểu dung lượng dữ liệu trong khi vẫn tối đa hóa độ chính xác phân tích.
+- **🖥️ Dashboard Trực Tiếp**: Giao diện web thân thiện để xem video đã xử lý và báo cáo AI.
 
 ---
 
-## 🚀 Getting Started
+## 🏗️ Kiến Trúc Hệ Thống
 
-### Prerequisites
+Dự án bao gồm ba thành phần chính hoạt động hài hòa:
+
+1.  **Backend (Java Spring Boot)**: Bộ điều phối trung tâm. Quản lý các API endpoint, lưu trữ cơ sở dữ liệu (MySQL) và điều phối giữa người dùng và dịch vụ AI.
+2.  **AI Client (Python)**: Lớp "Thị Giác". Chạy YOLOv8 để phát hiện đối tượng và xử lý video (cắt ảnh, định dạng).
+3.  **Frontend (Vanilla JS/HTML)**: Bảng điều khiển (Dashboard) nhẹ nhàng, phản hồi nhanh cho người dùng cuối.
+
+---
+
+## 🚀 Hướng Dẫn Cài Đặt
+
+### Yêu Cầu Tiên Quyết
 
 - **Java JDK 21+**
 - **Python 3.10+**
 - **Maven**
 - **Google Gemini API Key**
 
-### 1. 🧠 Setup AI Client (Python)
+### 1. 🧠 Cài Đặt AI Client (Python)
 
-Navigate to `traffic-ai-client`:
+Di chuyển vào thư mục `traffic-ai-client`:
 
 ```bash
 cd traffic-ai-client
@@ -61,48 +61,48 @@ pip install -r requirements.txt
 python server.py
 ```
 
-*The Python server will start on port `5000`.*
+*Server Python sẽ khởi chạy tại cổng `5000`.*
 
-### 2. 🛡️ Setup Backend (Spring Boot)
+### 2. 🛡️ Cài Đặt Backend (Spring Boot)
 
-Navigate to `incident-reporter`.  
-Running with Maven:
+Di chuyển vào thư mục `incident-reporter`.  
+Chạy bằng Maven:
 
 ```bash
 cd incident-reporter
 mvn spring-boot:run
 ```
 
-*The Backend will start on port `8080`.*
+*Backend sẽ khởi chạy tại cổng `8080`.*
 
-### 3. 🌐 Access the Dashboard
+### 3. 🌐 Truy Cập Dashboard
 
-Simply open `traffic-frontend/index.html` in your browser (or serve it via Live Server).
-
----
-
-## 💡 How It Works
-
-1.  **Upload**: User uploads a traffic camera video via the Dashboard.
-2.  **Detection**: The Python service scans the video using YOLOv8.
-3.  **Trigger**: If an accident is detected (labels like "crash", "accident"), the system captures the precise **Impact Frame**.
-4.  **Analysis**: The Java Backend sends this frame to **Gemini AI**.
-5.  **Report**: Gemini returns a detailed report (Description, Severity, Solutions), which is saved to the database and displayed on the Dashboard.
+Đơn giản chỉ cần mở file `traffic-frontend/index.html` trong trình duyệt của bạn (hoặc chạy qua Live Server).
 
 ---
 
-## 🛠️ Technology Stack
+## 💡 Cơ Chế Hoạt Động
+
+1.  **Upload**: Người dùng tải video camera giao thông lên qua Dashboard.
+2.  **Phát Hiện**: Dịch vụ Python quét video bằng YOLOv8.
+3.  **Kích Hoạt**: Nếu phát hiện tai nạn (nhãn như "crash", "accident"), hệ thống sẽ chụp lại **Khung Hình Va Chạm (Impact Frame)** chính xác nhất.
+4.  **Phân Tích**: Backend Java gửi khung hình này tới **Gemini AI**.
+5.  **Báo Cáo**: Gemini trả về báo cáo chi tiết (Mô tả, Mức độ, Giải pháp), dữ liệu được lưu vào database và hiển thị lên Dashboard.
+
+---
+
+## 🛠️ Công Nghệ Sử Dụng
 
 -   **Backend**: Java 21, Spring Boot 3.2, Hibernate/JPA.
 -   **AI/ML**: Python 3, Ultralytics YOLOv8, OpenCV, Google Generative AI SDK.
--   **Frontend**: HTML5, CSS3, JavaScript (ES6+), Bootstrap/Tailwind (optional).
+-   **Frontend**: HTML5, CSS3, JavaScript (ES6+), Bootstrap/Tailwind (tùy chọn).
 -   **Database**: MySQL.
 
 ---
 
-## 🤝 Contributing
+## 🤝 Đóng Góp
 
-Contributions are welcome! Please fork the repository and submit a pull request.
+Mọi đóng góp đều được hoan nghênh! Vui lòng fork repository và gửi pull request.
 
 ---
 

@@ -1,6 +1,6 @@
 # User Data
-data/
-/data
+data/*
+!data/.gitkeep
 *.mp4
 *.jpg
 *.png
