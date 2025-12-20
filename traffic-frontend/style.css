@@ -1,0 +1,422 @@
+:root {
+    --bg-color: #0f172a;
+    --card-bg: #1e293b;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --accent-red: #ef4444;
+    --accent-orange: #f97316;
+    --accent-blue: #3b82f6;
+    --green: #22c55e;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Inter', sans-serif;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    min-height: 100vh;
+}
+
+.app-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+
+.header .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.status {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: var(--text-secondary);
+}
+
+.status.connected .dot {
+    background-color: var(--green);
+    box-shadow: 0 0 10px var(--green);
+}
+
+/* Alert Banner */
+.alert-banner {
+    background: linear-gradient(135deg, #7f1d1d, #ef4444);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    animation: slideDown 0.5s ease-out;
+    box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4);
+}
+
+.alert-banner.hidden {
+    display: none;
+}
+
+.hidden {
+    display: none !important;
+}
+
+.alert-content h2 {
+    font-size: 1.8rem;
+    margin-bottom: 5px;
+}
+
+.alert-content p {
+    font-size: 1.1rem;
+    opacity: 0.9;
+}
+
+.close-btn {
+    background: rgba(0,0,0,0.2);
+    border: none;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.close-btn:hover {
+    background: rgba(0,0,0,0.4);
+}
+
+/* Stats */
+.stats-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    margin-bottom: 30px;
+}
+
+.stat-card {
+    background-color: var(--card-bg);
+    padding: 15px;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.stat-card h3 {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+}
+
+.stat-card p {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+/* Feed */
+.feed-section h2 {
+    margin-bottom: 15px;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.incident-list {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.incident-card {
+    background-color: var(--card-bg);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    border: 1px solid rgba(255,255,255,0.05);
+    transition: transform 0.2s;
+}
+
+.incident-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(255,255,255,0.1);
+}
+
+.incident-card img {
+    width: 120px;
+    height: 120px;
+    object-fit: cover;
+}
+
+.incident-card .info {
+    padding: 15px;
+    flex: 1;
+}
+
+.badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-right: 8px;
+}
+
+.badge-accident { background-color: rgba(239, 68, 68, 0.2); color: var(--accent-red); }
+.badge-fire { background-color: rgba(249, 115, 22, 0.2); color: var(--accent-orange); }
+
+.time {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.description {
+    margin: 8px 0;
+    font-size: 0.95rem;
+    line-height: 1.4;
+}
+
+.location {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes flash {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+.new-item {
+    animation: flash 1s ease-in-out;
+}
+
+/* Enhanced Video Upload Section */
+.video-upload-section {
+    margin-bottom: 40px;
+    background: linear-gradient(145deg, #1e293b, #0f172a);
+    padding: 25px;
+    border-radius: 16px;
+    box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.video-upload-section h2 {
+    font-size: 1.4rem;
+    margin-bottom: 20px;
+    color: var(--text-primary);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: 10px;
+}
+
+.upload-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    align-items: center;
+    margin-bottom: 20px;
+    background: rgba(0,0,0,0.2);
+    padding: 15px;
+    border-radius: 10px;
+}
+
+.file-input-wrapper {
+    position: relative;
+    overflow: hidden;
+    display: inline-block;
+}
+
+.file-input {
+    font-size: 1rem;
+    color: var(--text-secondary);
+}
+
+/* Custom file input look */
+input[type=file]::file-selector-button {
+  margin-right: 15px;
+  border: none;
+  background: #334155;
+  padding: 10px 20px;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  transition: background .2s ease-in-out;
+  font-weight: 500;
+}
+
+input[type=file]::file-selector-button:hover {
+  background: #475569;
+}
+
+.btn-primary {
+    background-color: var(--accent-blue);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-primary:not(:disabled):hover {
+    background-color: #2563eb;
+    transform: translateY(-1px);
+}
+
+.video-preview-box {
+    margin-top: 20px;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    border: 1px solid #333;
+}
+
+.video-label {
+    padding: 10px 15px;
+    background: #1e293b;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #333;
+}
+
+/* Success Result Section */
+.video-result {
+    margin-top: 30px;
+    background: rgba(34, 197, 94, 0.05); /* Green tint */
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    border-radius: 12px;
+    padding: 20px;
+    animation: slideDown 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.video-result h3 {
+    color: var(--green);
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.actions {
+    margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.btn-download {
+    background-color: var(--green);
+    color: #fff;
+    padding: 12px 25px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s;
+    box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+
+.btn-download:hover {
+    background-color: #16a34a;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 15px rgba(34, 197, 94, 0.4);
+}
+
+#processing-status {
+    color: var(--accent-orange);
+    margin-top: 20px;
+}
+
+.spinner {
+    width: 20px; 
+    height: 20px; 
+    border: 3px solid var(--accent-orange); 
+    border-top-color: transparent; 
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* striped progress bar */
+.progress-container {
+    width: 100%;
+    background-color: rgba(255,255,255,0.1);
+    border-radius: 8px;
+    height: 24px;
+    margin-top: 10px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    height: 100%;
+    background-color: var(--accent-orange);
+    width: 0%;
+    transition: width 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    background-image: linear-gradient(
+        45deg, 
+        rgba(255, 255, 255, 0.15) 25%, 
+        transparent 25%, 
+        transparent 50%, 
+        rgba(255, 255, 255, 0.15) 50%, 
+        rgba(255, 255, 255, 0.15) 75%, 
+        transparent 75%, 
+        transparent
+    );
+    background-size: 1rem 1rem;
+    animation: progress-stripes 1s linear infinite;
+}
+
+@keyframes progress-stripes {
+    0% { background-position: 1rem 0; }
+    100% { background-position: 0 0; }
+}

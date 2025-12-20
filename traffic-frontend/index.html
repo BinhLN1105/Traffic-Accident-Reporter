@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Traffic Incident Dashboard</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- CSS -->
+    <link rel="stylesheet" href="style.css">
+    <!-- CDN WebSocket Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="icon">🚦</span>
+                <h1>Incident Reporter</h1>
+            </div>
+            <div class="status" id="connection-status">
+                <span class="dot"></span> Connecting...
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            
+            <!-- Alert Section (Dynamic) -->
+            <div id="latest-alert" class="alert-banner hidden">
+                <div class="alert-content">
+                    <h2 id="alert-title">🔥 ACCIDENT DETECTED!</h2>
+                    <p id="alert-desc">A severe collision involving 2 cars was detected at Camera-01.</p>
+                </div>
+                <button class="close-btn" onclick="dismissAlert()">Dismiss</button>
+            </div>
+
+            <!-- Stats/Filters (Optional) -->
+            <div class="stats-bar">
+                <div class="stat-card">
+                    <h3>Total Incidents</h3>
+                    <p id="count-total">0</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Today</h3>
+                    <p id="count-today">0</p>
+                </div>
+            </div>
+
+            <!-- Video Upload & Analysis Section -->
+            <div class="video-upload-section">
+                <h2>Analyze Video Footage</h2>
+                
+                <div class="upload-controls">
+                    <div class="file-input-wrapper">
+                        <input type="file" id="video-input" accept="video/*" class="file-input" onchange="previewFile()">
+                    </div>
+                    <button id="analyze-btn" type="button" class="btn-primary" onclick="startAnalysis()" disabled style="opacity: 0.5; cursor: not-allowed;">
+                        Run Analysis ⚡
+                    </button>
+                </div>
+
+                <!-- 1. Input Preview (Hidden until file selected) -->
+                <div id="video-preview-container" class="video-preview-box hidden">
+                    <div class="video-label">Original Footage Monitor</div>
+                    <video id="input-video-preview" controls width="100%">
+                        <source src="" type="video/mp4">
+                    </video>
+                </div>
+
+                <!-- 2. Processing Status (Hidden until analyzing) -->
+                <div id="processing-status" class="hidden" style="margin-top: 20px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span id="status-text" style="color: var(--accent-orange); font-weight: 600;">Initializing AI...</span>
+                        <span class="spinner"></span>
+                    </div>
+                    <div class="progress-container">
+                        <div id="progress-bar" class="progress-bar" style="width: 0%">0%</div>
+                    </div>
+                </div>
+
+                <!-- 3. Result Output (Hidden until complete) -->
+                <div id="video-result" class="video-result hidden">
+                    <h3>✅ Analysis Complete</h3>
+                    
+                    <!-- AI Report Section -->
+                    <div id="ai-report-container" class="hidden" style="margin-bottom: 15px; padding: 15px; background: rgba(0,0,0,0.3); border-left: 4px solid var(--accent-blue); border-radius: 4px;">
+                        <h4 style="color: var(--accent-blue); margin-bottom: 8px;">🤖 AI Incident Report</h4>
+                        <p id="ai-report-text" style="font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap;">Analysis...</p>
+                    </div>
+
+                    <div class="video-preview-box" style="margin-top: 10px;">
+                         <!-- Reuse style for consistency -->
+                        <video id="processed-video" controls width="100%" autoplay onerror="console.error('Video Error:', this.error)">
+                            <source src="" type="video/webm">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    
+                    <div class="actions">
+                        <a id="download-link" href="#" class="btn-download" download>
+                            <span>Download Report</span> ⬇️
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feed -->
+            <div class="feed-section">
+                <h2>Live Incident Feed</h2>
+                <div class="incident-list" id="incident-list">
+                    <!-- Items will be injected here via JS -->
+                    <!-- Example Item
+                    <div class="incident-card">
+                        <img src="https://via.placeholder.com/150" alt="Snapshot">
+                        <div class="info">
+                            <span class="badge badge-accident">Accident</span>
+                            <span class="time">10:45 AM</span>
+                            <p class="description">Gemini Description here...</p>
+                            <span class="location">📍 Camera-01</span>
+                        </div>
+                    </div>
+                    -->
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

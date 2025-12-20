@@ -1,0 +1,31 @@
+# User Data
+data/
+/data
+*.mp4
+*.jpg
+*.png
+*.gif
+*.log
+
+# Java / Maven
+target/
+*.class
+.mvn/
+mvnw
+mvnw.cmd
+
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.iml
+.DS_Store
+
+# Agent
+.gemini/
