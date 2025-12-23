@@ -24,7 +24,14 @@ class TrafficMonitorApp(QMainWindow):
         self.image_label.resize(800, 600)
         self.layout.addWidget(self.image_label)
 
+        self.source = 0 # Default to Webcam
+        self.output_path = None
+        
         # Controls
+        self.btn_select = QPushButton("📂 Select Video", self)
+        self.btn_select.clicked.connect(self.select_video)
+        self.layout.addWidget(self.btn_select)
+
         self.btn_start = QPushButton("Start Detection", self)
         self.btn_start.clicked.connect(self.start_detection)
         self.layout.addWidget(self.btn_start)
@@ -48,18 +55,50 @@ class TrafficMonitorApp(QMainWindow):
     def log(self, message):
         self.log_output.append(message)
 
+    def select_video(self):
+        from PyQt6.QtWidgets import QFileDialog
+        file_name, _ = QFileDialog.getOpenFileName(self, "Select Video", "", "Video Files (*.mp4 *.avi *.mkv)")
+        if file_name:
+            self.source = file_name
+            self.log(f"Selected Video: {file_name}")
+            
+            # Auto-generate output path in 'd:\ProjectHTGTTM_CarTrafficReport\data'
+            import os
+            import uuid
+            
+            # Ensure data dir exists
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir)
+                
+            base_name = os.path.basename(file_name)
+            name, ext = os.path.splitext(base_name)
+            out_name = f"processed_{uuid.uuid4().hex[:8]}_{name}{ext}"
+            self.output_path = os.path.join(data_dir, out_name)
+            self.log(f"Output will be saved to: {self.output_path}")
+
     def start_detection(self):
         # Fixed path based on user input
         model_path = 'model/small/best.pt' 
         
-        self.thread = DetectionThread(model_path=model_path, source=0) # 0 for Webcam
+        if self.source == 0:
+            self.log("Starting Webcam...")
+        else:
+            self.log(f"Processing File: {self.source}")
+        
+        self.thread = DetectionThread(model_path=model_path, source=self.source, save_path=self.output_path)
         self.thread.change_pixmap_signal.connect(self.update_image)
         self.thread.detection_signal.connect(self.handle_detection)
+        self.thread.finished.connect(self.on_process_finished) # Handle completion
         self.thread.start()
         
         self.btn_start.setEnabled(False)
+        self.btn_select.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.log("System Started. Monitoring traffic...")
+    
+    def on_process_finished(self):
+        self.log("Processing Finished.")
+        self.stop_detection()
 
     def stop_detection(self):
         if self.thread:
@@ -67,9 +106,10 @@ class TrafficMonitorApp(QMainWindow):
             self.thread = None
         
         self.btn_start.setEnabled(True)
+        self.btn_select.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.image_label.clear()
-        self.log("System Stopped.")
+        # self.image_label.clear() # Optional: keep last frame
+        self.log("Stopped.")
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):

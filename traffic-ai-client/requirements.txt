@@ -5,3 +5,6 @@ requests
 numpy
 flask
 flask-cors
+aiortc
+av
+asgiref

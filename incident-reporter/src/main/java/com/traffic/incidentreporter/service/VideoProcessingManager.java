@@ -45,21 +45,24 @@ public class VideoProcessingManager {
         public int progress = 0;
         public String aiReport; 
         public Object incidents; // List of incidents from JSON
+        public List<String> snapshotPaths; // ADDED
 
         public TaskStatus(String id) {
             this.id = id;
             this.status = Status.PENDING;
             this.message = "Queued...";
+            this.snapshotPaths = new ArrayList<>();
         }
     }
 
     private final Map<String, TaskStatus> tasks = new ConcurrentHashMap<>();
 
-    public String submitTask(String inputPath, String outputPath, String pythonScriptPath) {
+    public String submitTask(String inputPath, String outputPath, String pythonScriptPath, boolean isRealtime) {
         try {
-            Map<String, String> request = new HashMap<>();
+            Map<String, Object> request = new HashMap<>();
             request.put("inputPath", inputPath);
             request.put("outputPath", outputPath);
+            request.put("realtime", isRealtime);
 
             ResponseEntity<Map> response = restTemplate.postForEntity(PYTHON_SERVER_URL + "/process", request, Map.class);
             
@@ -109,21 +112,29 @@ public class VideoProcessingManager {
                         
                         // --- POST-PROCESSING: Read Metadata & Call AI & Save to DB ---
                         try {
-                            File metadataFile = new File(outputPath.replace(".webm", ".json"));
+                            // Python appends .json to the full output path (e.g. video.webm -> video.webm.json)
+                            File metadataFile = new File(outputPath + ".json");
                             if (!metadataFile.exists()) {
-                                // Fallback for legacy .mp4 tasks or if replacement failed
-                                metadataFile = new File(outputPath.replace(".mp4", ".json"));
+                                // Fallback: Try replaced extension if appended not found
+                                metadataFile = new File(outputPath.replace(".webm", ".json"));
                             }
                             
                             if (metadataFile.exists()) {
                                 ObjectMapper mapper = new ObjectMapper();
                                 Map<String, Object> metadata = mapper.readValue(metadataFile, Map.class);
                                 
-                                // READ INCIDENTS LIST
                                 localStatus.incidents = metadata.get("incidents");
                                 
                                 boolean hasAccident = (boolean) metadata.getOrDefault("has_accident", false);
                                 List<String> snapshotPaths = (List<String>) metadata.get("snapshot_paths");
+                                
+                                // Store relative paths for Frontend
+                                if (snapshotPaths != null) {
+                                     localStatus.snapshotPaths = new ArrayList<>();
+                                     for(String p : snapshotPaths) {
+                                         localStatus.snapshotPaths.add(new File(p).getName());
+                                     }
+                                }
                                 String legacySnapshot = (String) metadata.get("snapshot_path");
                                 
                                 // Determine primary snapshot for DB/Display

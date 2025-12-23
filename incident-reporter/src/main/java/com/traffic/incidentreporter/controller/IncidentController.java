@@ -33,9 +33,9 @@ public class IncidentController {
         String description = geminiService.analyzeImage(image);
 
         // 2. Save Image
-        String fileName = "snapshot_" + System.currentTimeMillis() + "_" + image.getOriginalFilename();
+        String fileName = "manual_" + System.currentTimeMillis() + "_" + image.getOriginalFilename();
         try {
-            java.nio.file.Path uploadDir = java.nio.file.Paths.get("uploads").toAbsolutePath().normalize();
+            java.nio.file.Path uploadDir = java.nio.file.Paths.get("..", "data").toAbsolutePath().normalize();
             if (!java.nio.file.Files.exists(uploadDir)) {
                 java.nio.file.Files.createDirectories(uploadDir);
             }
@@ -49,6 +49,22 @@ public class IncidentController {
 
         // 3. Create Entity
         Incident incident = new Incident();
+        
+        // MANUAL ID ASSIGNMENT (GAP FILLING STRATEGY)
+        Long newId = 1L;
+        if (!incidentRepository.existsById(1L)) {
+            newId = 1L;
+        } else {
+            Long gapId = incidentRepository.findNextAvailableId();
+            if (gapId != null) {
+                newId = gapId;
+            } else {
+                Long maxId = incidentRepository.findMaxId();
+                newId = (maxId != null) ? maxId + 1 : 1L;
+            }
+        }
+        incident.setId(newId);
+        
         incident.setType(type);
         incident.setLocation(location);
         incident.setTimestamp(LocalDateTime.now());
@@ -57,6 +73,7 @@ public class IncidentController {
         incident.setAlertSent(false);
 
         Incident saved = incidentRepository.save(incident);
+
 
         // 4. Send WebSocket Alert
         try {

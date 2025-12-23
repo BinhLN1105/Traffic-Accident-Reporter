@@ -11,6 +11,7 @@
     <!-- CDN WebSocket Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+
 </head>
 <body>
 
@@ -55,12 +56,36 @@
                 <h2>Analyze Video Footage</h2>
                 
                 <div class="upload-controls">
-                    <div class="file-input-wrapper">
+                    <!-- Mode Switcher -->
+                    <div style="margin-bottom: 20px;">
+                        <button id="mode-upload-btn" class="btn-primary" onclick="switchMode('upload')" style="margin-right: 10px;">📂 Video Analysis</button>
+                        <button id="mode-live-btn" class="btn-secondary" onclick="switchMode('live')">📹 Live Monitor</button>
+                    </div>
+
+                    <div id="upload-input-section" class="file-input-wrapper">
                         <input type="file" id="video-input" accept="video/*" class="file-input" onchange="previewFile()">
                     </div>
-                    <button id="analyze-btn" type="button" class="btn-primary" onclick="startAnalysis()" disabled style="opacity: 0.5; cursor: not-allowed;">
-                        Run Analysis ⚡
-                    </button>
+                    
+                    <!-- NEW: Two Options for Analysis -->
+                    <div id="analysis-options" class="hidden" style="margin-top: 15px; display: flex; gap: 10px; justify-content: center;">
+                         <button id="analyze-stream-btn" type="button" class="btn-primary" onclick="startAnalysis(true)" style="background: var(--accent-orange);">
+                            ▶️ Stream (Real-time)
+                        </button>
+                        <button id="analyze-batch-btn" type="button" class="btn-primary" onclick="startAnalysis(false)">
+                            ⚡ Analyst (Batch)
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- NEW: Live Stream Section (Hidden by default) -->
+                <div id="live-stream-section" class="video-preview-box hidden" style="text-align: center;">
+                    <h3 style="color: var(--accent-orange); margin-bottom: 10px;">🔴 LIVE WIRELESS FEED</h3>
+                    <div style="border: 2px solid var(--accent-orange); display: inline-block; overflow: hidden; border-radius: 8px;">
+                        <!-- The source will be set by JS when active to save bandwidth -->
+                        <!-- WebRTC Video Element -->
+                        <video id="webrtc-video" autoplay playsinline controls muted style="width: 100%; max-width: 800px; display: block; background: #000;"></video>
+                    </div>
+                    <p style="margin-top: 10px; font-size: 0.9em; opacity: 0.7;">Streaming from Python Server (Camera 0)</p>
                 </div>
 
                 <!-- 1. Input Preview (Hidden until file selected) -->
@@ -94,10 +119,15 @@
 
                     <div class="video-preview-box" style="margin-top: 10px;">
                          <!-- Reuse style for consistency -->
-                        <video id="processed-video" controls width="100%" autoplay onerror="console.error('Video Error:', this.error)">
+                        <video id="processed-video" controls width="100%" autoplay style="border-radius: 8px; border: 1px solid #444;">
                             <source src="" type="video/webm">
                             Your browser does not support the video tag.
                         </video>
+                        
+                        <!-- Snapshots (Before/During/After) -->
+                        <div id="snapshot-gallery" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:15px; justify-content:center;">
+                            <!-- Images injected by JS -->
+                        </div>
                     </div>
                     
                     <div class="actions">

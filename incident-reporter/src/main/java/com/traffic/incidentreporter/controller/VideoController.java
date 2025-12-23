@@ -18,6 +18,8 @@ import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.ArrayList;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/videos")
@@ -39,9 +41,11 @@ public class VideoController {
     }
 
     @PostMapping("/process")
-    public ResponseEntity<Map<String, String>> submitVideo(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<Map<String, String>> submitVideo(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "realtime", defaultValue = "false") boolean isRealtime) {
         try {
-            System.out.println("Received: " + file.getOriginalFilename());
+            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ")");
             
             String logFileName = UUID.randomUUID().toString() + "_" + file.getOriginalFilename();
             Path inputLocation = this.fileStorageLocation.resolve(logFileName);
@@ -52,10 +56,11 @@ public class VideoController {
 
             // Async Submit
             String pythonScript = "d:/ProjectHTGTTM_CarTrafficReport/traffic-ai-client/video_processor.py";
-            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript);
+            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime);
 
             Map<String, String> response = new HashMap<>();
             response.put("taskId", taskId);
+            response.put("filePath", inputLocation.toAbsolutePath().toString());
             response.put("message", "Upload successful. Processing started.");
             
             return ResponseEntity.ok(response);
@@ -94,6 +99,14 @@ public class VideoController {
         result.put("downloadUrl", "/api/videos/download/" + filename);
         result.put("aiReport", status.aiReport);
         result.put("incidents", status.incidents);
+        
+        List<String> snapshotUrls = new ArrayList<>();
+        if (status.snapshotPaths != null) {
+             for(String s : status.snapshotPaths) {
+                 snapshotUrls.add("/api/videos/download/" + s);
+             }
+        }
+        result.put("snapshots", snapshotUrls);
 
         return ResponseEntity.ok(result);
     }
