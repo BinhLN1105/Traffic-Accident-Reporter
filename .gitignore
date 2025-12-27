@@ -29,3 +29,6 @@ env/
 
 # Agent
 .gemini/
+
+# Remove commit git model over 100MB
+traffic-ai-client/model/medium/best.pt
