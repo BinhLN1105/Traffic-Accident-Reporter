@@ -22,11 +22,32 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
-# Load Model Once
-MODEL_PATH = "model/small/best.pt"
-print(f"Loading Model from {MODEL_PATH}...")
-model = YOLO(MODEL_PATH) 
-print("Model Loaded!")
+# Global Model Cache
+MODELS = {}
+MODEL_PATHS = {
+    "small": "model/small/best.pt",
+    "medium": "model/medium/best.pt"
+}
+
+def get_model(model_type="medium"):
+    """
+    Retrieves the requested YOLO model, loading it if necessary.
+    Defaults to 'medium' if model_type is invalid or not specified.
+    """
+    model_type = str(model_type).lower()
+    if model_type not in MODEL_PATHS:
+        print(f"Warning: Unknown model type '{model_type}'. Defaulting to 'medium'.")
+        model_type = "medium"
+    
+    if model_type not in MODELS:
+        print(f"Loading '{model_type}' model from {MODEL_PATHS[model_type]}...")
+        MODELS[model_type] = YOLO(MODEL_PATHS[model_type])
+        print(f"Model '{model_type}' loaded successfully.")
+    
+    return MODELS[model_type]
+
+# Initialize default model
+get_model("medium")
 
 # Job Store
 jobs = {}
@@ -35,8 +56,8 @@ pcs = set()
 # --- BATCH WORKER ---
 from collections import deque
 
-def process_video_task(job_id, input_path, output_path):
-    print(f"[{job_id}] Starting BATCH processing: {input_path} -> {output_path}")
+def process_video_task(job_id, input_path, output_path, model_type="medium"):
+    print(f"[{job_id}] Starting BATCH processing: {input_path} -> {output_path} (Model: {model_type})")
     jobs[job_id]['status'] = 'PROCESSING'
     jobs[job_id]['progress'] = 0
     
@@ -65,7 +86,7 @@ def process_video_task(job_id, input_path, output_path):
         incidents = []
         
         # Snapshot Logic: Before, During, After
-        frame_buffer = deque(maxlen=45) # ~1.5 sec buffer
+        frame_buffer = deque(maxlen=100) # ~3.3 sec buffer
         snapshot_state = 'SEARCHING' # SEARCHING -> CAPTURING_AFTER -> DONE
         frames_since_incident = 0
         snapshot_paths = []
@@ -84,6 +105,7 @@ def process_video_task(job_id, input_path, output_path):
             frame_buffer.append(frame.copy())
 
             # Inference
+            model = get_model(model_type)
             results = model(frame, verbose=False)
             current_incident_label = None
             current_conf = 0
@@ -139,7 +161,7 @@ def process_video_task(job_id, input_path, output_path):
                     
             elif snapshot_state == 'CAPTURING_AFTER':
                 frames_since_incident += 1
-                if frames_since_incident >= 45: # ~1.5 sec after
+                if frames_since_incident >= 90: # ~3 sec after
                     # 3. Save AFTER
                     after_path = os.path.join(DATA_DIR, f"{job_id}_after.jpg")
                     cv2.imwrite(after_path, frame)
@@ -231,6 +253,7 @@ def process_video():
     input_path = data.get('inputPath')
     output_path = data.get('outputPath') # Optional for Realtime, Required for Batch
     is_realtime = data.get('realtime', False)
+    model_type = data.get('modelType', 'medium') # Default to medium
     
     if not input_path:
         return jsonify({"error": "Missing inputPath"}), 400
@@ -243,7 +266,8 @@ def process_video():
             "id": job_id,
             "inputPath": input_path,
             "type": "REALTIME",
-            "status": "READY"
+            "status": "READY",
+            "modelType": model_type
         }
     else:
         # BATCH JOB
@@ -256,11 +280,12 @@ def process_video():
             "id": job_id,
             "type": "BATCH",
             "status": "QUEUED",
-            "progress": 0
+            "progress": 0,
+            "modelType": model_type
         }
         
         # Start Thread
-        worker = threading.Thread(target=process_video_task, args=(job_id, input_path, output_path))
+        worker = threading.Thread(target=process_video_task, args=(job_id, input_path, output_path, model_type))
         worker.daemon = True
         worker.start()
 

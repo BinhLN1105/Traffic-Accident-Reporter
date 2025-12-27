@@ -43,9 +43,10 @@ public class VideoController {
     @PostMapping("/process")
     public ResponseEntity<Map<String, String>> submitVideo(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "realtime", defaultValue = "false") boolean isRealtime) {
+            @RequestParam(value = "realtime", defaultValue = "false") boolean isRealtime,
+            @RequestParam(value = "modelType", defaultValue = "medium") String modelType) {
         try {
-            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ")");
+            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ", Model=" + modelType + ")");
             
             String logFileName = UUID.randomUUID().toString() + "_" + file.getOriginalFilename();
             Path inputLocation = this.fileStorageLocation.resolve(logFileName);
@@ -56,7 +57,7 @@ public class VideoController {
 
             // Async Submit
             String pythonScript = "d:/ProjectHTGTTM_CarTrafficReport/traffic-ai-client/video_processor.py";
-            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime);
+            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime, modelType);
 
             Map<String, String> response = new HashMap<>();
             response.put("taskId", taskId);

@@ -1,7 +1,7 @@
 import sys
 import cv2
 import numpy as np
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton, QTextEdit
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton, QTextEdit, QComboBox
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import pyqtSlot, Qt, QThread
 
@@ -31,6 +31,15 @@ class TrafficMonitorApp(QMainWindow):
         self.btn_select = QPushButton("📂 Select Video", self)
         self.btn_select.clicked.connect(self.select_video)
         self.layout.addWidget(self.btn_select)
+
+        # Model Selection
+        self.lbl_model = QLabel("Select AI Model:", self)
+        self.layout.addWidget(self.lbl_model)
+
+        self.combo_model = QComboBox(self)
+        self.combo_model.addItems(["Standard (Small)", "Premium (Medium)"])
+        self.combo_model.setCurrentIndex(1) # Default to Premium
+        self.layout.addWidget(self.combo_model)
 
         self.btn_start = QPushButton("Start Detection", self)
         self.btn_start.clicked.connect(self.start_detection)
@@ -78,8 +87,13 @@ class TrafficMonitorApp(QMainWindow):
             self.log(f"Output will be saved to: {self.output_path}")
 
     def start_detection(self):
-        # Fixed path based on user input
-        model_path = 'model/small/best.pt' 
+        # Determine model path
+        if self.combo_model.currentIndex() == 1:
+             model_path = 'model/medium/best.pt'
+             self.log("Using Premium Model (Medium)")
+        else:
+             model_path = 'model/small/best.pt' 
+             self.log("Using Standard Model (Small)") 
         
         if self.source == 0:
             self.log("Starting Webcam...")

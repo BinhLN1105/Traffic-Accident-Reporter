@@ -65,6 +65,15 @@
                     <div id="upload-input-section" class="file-input-wrapper">
                         <input type="file" id="video-input" accept="video/*" class="file-input" onchange="previewFile()">
                     </div>
+
+                    <!-- Model Selection -->
+                    <div id="model-selection-container" class="hidden" style="margin-top: 15px; text-align: center;">
+                        <label for="model-select" style="margin-right: 10px; color: #ccc;">AI Model:</label>
+                        <select id="model-select" style="padding: 8px 12px; border-radius: 6px; background: #2a2a2a; color: white; border: 1px solid #444; font-family: 'Inter', sans-serif;">
+                            <option value="medium" selected>✨ Premium (High Accuracy)</option>
+                            <option value="small">🚀 Standard (Fast)</option>
+                        </select>
+                    </div>
                     
                     <!-- NEW: Two Options for Analysis -->
                     <div id="analysis-options" class="hidden" style="margin-top: 15px; display: flex; gap: 10px; justify-content: center;">

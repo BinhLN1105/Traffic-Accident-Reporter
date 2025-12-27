@@ -46,74 +46,82 @@ class DetectionThread(QThread):
             self.out = cv2.VideoWriter(self.save_path, fourcc, fps, (width, height))
         
         last_alert_time = 0
-        alert_cooldown = 30 # Increase cooldown to avoid overlapping sequences
+        alert_cooldown = 30 
         
-        # Snapshot Logic
-        frame_buffer = deque(maxlen=40) # Store ~1-2 seconds of video (at 30fps)
-        snapshot_state = "IDLE" # IDLE, WAITING_FOR_AFTER
+        # Snapshot Configuration
+        FPS = 30
+        BEFORE_SECONDS = 3
+        AFTER_SECONDS = 3
+        BUFFER_SIZE = FPS * BEFORE_SECONDS
+        AFTER_FRAMES = FPS * AFTER_SECONDS
+
+        frame_buffer = deque(maxlen=BUFFER_SIZE)
+        snapshot_state = "IDLE"
         frames_since_incident = 0
-        TRIGGER_AFTER_FRAMES = 45 # ~1.5 seconds after
         current_incident_label = ""
         
         while self.running:
+            # ... [Read Frame] ...
             ret, frame = cap.read()
-            if not ret:
-                break
+            if not ret: break
 
-            # YOLO Inference
-            results = self.model(frame, verbose=False)
-            annotated_frame = results[0].plot()
-
-            # Maintain buffer
+            # Need to maintain buffer BEFORE skipping inference
             frame_buffer.append(frame.copy())
 
-            # Check for detections
-            current_time = time.time()
-            is_incident = False
-            detected_label = ""
+            # Frame skipping logic ...
+            frame_count += 1
+            annotated_frame = frame
             
-            # Logic: Only check if IDLE or cooldown passed (to avoid spamming)
-            if snapshot_state == "IDLE" and (current_time - last_alert_time > alert_cooldown):
-                for result in results:
-                    for box in result.boxes:
-                        class_id = int(box.cls[0])
-                        label = self.model.names[class_id]
-                        conf = float(box.conf[0])
-                        
-                        # Check logic
-                        if conf > 0.6 and ("accident" in label.lower() or "crash" in label.lower() or "collision" in label.lower()): 
-                             is_incident = True
-                             detected_label = label
-                             print(f"Detected {label} ({conf:.2f})")
-                             break
-            
-            # STATE MACHINE for Snapshots
-            if is_incident and snapshot_state == "IDLE":
-                snapshot_state = "WAITING_FOR_AFTER"
-                frames_since_incident = 0
-                current_incident_label = detected_label
-                last_alert_time = current_time
+            # Run Inference only on specific frames
+            if frame_count % SKIP_FRAMES == 0:
+                # YOLO Inference
+                results = self.model(frame, verbose=False)
+                annotated_frame = results[0].plot()
+
+                # Check for detections
+                current_time = time.time()
+                is_incident = False
+                detected_label = ""
                 
-                # Use a consistent ID for the whole sequence
-                sequence_id = int(time.time())
-                self.current_sequence_id = sequence_id 
+                # Logic: Only check if IDLE or cooldown passed
+                if snapshot_state == "IDLE" and (current_time - last_alert_time > alert_cooldown):
+                    for result in results:
+                         # ... [Detection Logic] ...
+                         for box in result.boxes:
+                            class_id = int(box.cls[0])
+                            label = self.model.names[class_id]
+                            conf = float(box.conf[0])
+                            
+                            if conf > 0.6 and ("accident" in label.lower() or "crash" in label.lower() or "collision" in label.lower()): 
+                                 is_incident = True
+                                 detected_label = label
+                                 break
                 
-                # 1. Save BEFORE (Oldest in buffer)
-                if len(frame_buffer) > 0:
-                    path_before = os.path.join(DATA_DIR, f"{sequence_id}_{detected_label}_1_before.jpg")
-                    cv2.imwrite(path_before, frame_buffer[0])
-                
-                # 2. Save DURING (Current)
-                path_during = os.path.join(DATA_DIR, f"{sequence_id}_{detected_label}_2_during.jpg")
-                cv2.imwrite(path_during, frame)
-                
-                # Emit Signal for API (Send the 'During' image)
-                self.detection_signal.emit(detected_label, path_during)
+                # STATE MACHINE updates
+                if is_incident and snapshot_state == "IDLE":
+                    snapshot_state = "WAITING_FOR_AFTER"
+                    frames_since_incident = 0
+                    current_incident_label = detected_label
+                    last_alert_time = current_time
+                    
+                    sequence_id = int(time.time())
+                    self.current_sequence_id = sequence_id 
+                    
+                    # 1. Save BEFORE (Oldest in buffer)
+                    if len(frame_buffer) > 0:
+                        path_before = os.path.join(DATA_DIR, f"{sequence_id}_{detected_label}_1_before.jpg")
+                        cv2.imwrite(path_before, frame_buffer[0])
+                    
+                    # 2. Save DURING (Current)
+                    path_during = os.path.join(DATA_DIR, f"{sequence_id}_{detected_label}_2_during.jpg")
+                    cv2.imwrite(path_during, frame)
+                    
+                    self.detection_signal.emit(detected_label, path_during)
                 
             elif snapshot_state == "WAITING_FOR_AFTER":
                 frames_since_incident += 1
-                if frames_since_incident >= TRIGGER_AFTER_FRAMES:
-                    # 3. Save AFTER using same sequence_id
+                if frames_since_incident >= AFTER_FRAMES:
+                    # 3. Save AFTER
                     path_after = os.path.join(DATA_DIR, f"{self.current_sequence_id}_{current_incident_label}_3_after.jpg")
                     cv2.imwrite(path_after, frame)
                     print("Sequence capture complete.")

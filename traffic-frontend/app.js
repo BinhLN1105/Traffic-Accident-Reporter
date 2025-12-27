@@ -233,8 +233,10 @@ function previewFile() {
         previewContainer.classList.remove('hidden');
         
         const optionsDiv = document.getElementById('analysis-options');
+        const modelDiv = document.getElementById('model-selection-container');
         optionsDiv.classList.remove('hidden');
         optionsDiv.style.display = 'flex';
+        modelDiv.classList.remove('hidden');
 
         statusDiv.classList.add('hidden');
         resultDiv.classList.add('hidden');
@@ -272,8 +274,10 @@ async function startAnalysis(isRealtime) {
     
     // --- UPLOAD TO JAVA (SPRING BOOT) ---
     const formData = new FormData();
+    const modelType = document.getElementById('model-select').value;
     formData.append("file", file);
     formData.append("realtime", isRealtime);
+    formData.append("modelType", modelType);
 
     try {
         console.log("Uploading to Spring Boot...");
