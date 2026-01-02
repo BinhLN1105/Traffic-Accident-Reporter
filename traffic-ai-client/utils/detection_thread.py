@@ -16,20 +16,29 @@ class DetectionThread(QThread):
     change_pixmap_signal = pyqtSignal(np.ndarray)
     detection_signal = pyqtSignal(str, str) # incident_type, image_path
 
-    def __init__(self, model_path='best.pt', source=0, save_path=None):
+    def __init__(self, model_path='best.pt', source=0, save_path=None, custom_labels="accident, vehicle accident", conf_threshold=0.70):
         super().__init__()
         self.model_path = model_path
         self.source = source
         self.save_path = save_path
+        self.custom_labels = custom_labels
+        self.conf_threshold = conf_threshold
         self.running = True
         self.model = None
         self.out = None
 
     def run(self):
+        # Parse labels
+        target_labels = [l.strip().lower() for l in self.custom_labels.split(',') if l.strip()]
+        print(f"Tracking labels: {target_labels} | Conf: {self.conf_threshold}")
+        
+        # ... [Load Model & Video] ...
+
         # Load Model
         try:
             print(f"Loading model from {self.model_path}...")
             self.model = YOLO(self.model_path)
+            # ... 
         except Exception as e:
             print(f"Error loading model: {e}")
             return
@@ -48,12 +57,16 @@ class DetectionThread(QThread):
         last_alert_time = 0
         alert_cooldown = 30 
         
-        # Snapshot Configuration
+        # Snapshot Logic ...
         FPS = 30
         BEFORE_SECONDS = 3
         AFTER_SECONDS = 3
         BUFFER_SIZE = FPS * BEFORE_SECONDS
         AFTER_FRAMES = FPS * AFTER_SECONDS
+        
+        # Frame Skipping Config
+        SKIP_FRAMES = 3 
+        frame_count = 0
 
         frame_buffer = deque(maxlen=BUFFER_SIZE)
         snapshot_state = "IDLE"
@@ -61,18 +74,16 @@ class DetectionThread(QThread):
         current_incident_label = ""
         
         while self.running:
-            # ... [Read Frame] ...
             ret, frame = cap.read()
             if not ret: break
 
-            # Need to maintain buffer BEFORE skipping inference
+            # Appending to buffer MUST happen every frame to ensure valid history
             frame_buffer.append(frame.copy())
 
-            # Frame skipping logic ...
             frame_count += 1
             annotated_frame = frame
             
-            # Run Inference only on specific frames
+            # --- Frame Skipping for Inference ---
             if frame_count % SKIP_FRAMES == 0:
                 # YOLO Inference
                 results = self.model(frame, verbose=False)
@@ -83,16 +94,15 @@ class DetectionThread(QThread):
                 is_incident = False
                 detected_label = ""
                 
-                # Logic: Only check if IDLE or cooldown passed
                 if snapshot_state == "IDLE" and (current_time - last_alert_time > alert_cooldown):
                     for result in results:
-                         # ... [Detection Logic] ...
                          for box in result.boxes:
                             class_id = int(box.cls[0])
                             label = self.model.names[class_id]
                             conf = float(box.conf[0])
                             
-                            if conf > 0.6 and ("accident" in label.lower() or "crash" in label.lower() or "collision" in label.lower()): 
+                            # Use Custom Labels & Confidence Threshold
+                            if conf >= self.conf_threshold and label.lower() in target_labels: 
                                  is_incident = True
                                  detected_label = label
                                  break

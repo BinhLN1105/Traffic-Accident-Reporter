@@ -143,7 +143,7 @@ function addToFeed(incident) {
     const typeClass = incident.type === 'Fire' ? 'badge-fire' : 'badge-accident';
 
     card.innerHTML = `
-        <img src="${incident.imageUrl ? (API_BASE + incident.imageUrl) : 'https://via.placeholder.com/150'}" alt="Snapshot">
+        <img src="${incident.imageUrl ? (API_BASE + incident.imageUrl) : 'https://via.placeholder.com/150'}" alt="Snapshot" onclick="openLightbox(this.src)" style="cursor: pointer;">
         <div class="info">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
                 <span class="badge ${typeClass}">${incident.type}</span>
@@ -233,6 +233,12 @@ function previewFile() {
         previewContainer.classList.remove('hidden');
         
         const optionsDiv = document.getElementById('analysis-options');
+       // Show hidden elements
+    document.getElementById('model-selection-container').classList.remove('hidden');
+    document.getElementById('model-selection-container').classList.remove('hidden');
+    // document.getElementById('labels-container').classList.remove('hidden'); // Removed
+    
+    // Show Analysis Options (Upload or Live)x';
         const modelDiv = document.getElementById('model-selection-container');
         optionsDiv.classList.remove('hidden');
         optionsDiv.style.display = 'flex';
@@ -275,9 +281,13 @@ async function startAnalysis(isRealtime) {
     // --- UPLOAD TO JAVA (SPRING BOOT) ---
     const formData = new FormData();
     const modelType = document.getElementById('model-select').value;
-    formData.append("file", file);
-    formData.append("realtime", isRealtime);
-    formData.append("modelType", modelType);
+    const confThreshold = document.getElementById('conf-threshold').value;
+
+    formData.append('file', file);
+    formData.append('realtime', isRealtime);
+    formData.append('modelType', modelType);
+    // customLabels not sent, backend will use default
+    formData.append('confidenceThreshold', confThreshold);
 
     try {
         console.log("Uploading to Spring Boot...");
@@ -388,7 +398,7 @@ async function pollStatus(taskId) {
                     const label = (idx < 3) ? labels[idx] : `Snapshot ${idx+1}`;
                     
                     wrap.innerHTML = `
-                        <img src="${API_BASE + url}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555;">
+                        <img src="${API_BASE + url}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">
                         <div style="font-size:0.8em; color:#aaa; margin-top:2px;">${label}</div>
                     `;
                     gallery.appendChild(wrap);
@@ -457,3 +467,29 @@ function switchMode(mode) {
         }
     }
 }
+// --- Lightbox Functions ---
+function openLightbox(imgSrc) {
+    const modal = document.getElementById('lightbox-modal');
+    const modalImg = document.getElementById('lightbox-img');
+    modal.classList.add('show');
+    modalImg.src = imgSrc;
+    
+    // Close on click outside
+    modal.onclick = function(e) {
+        if(e.target === modal) {
+            closeLightbox();
+        }
+    }
+}
+
+function closeLightbox() {
+    const modal = document.getElementById('lightbox-modal');
+    modal.classList.remove('show');
+}
+
+// Close on Escape key
+document.addEventListener('keydown', function(event) {
+    if (event.key === "Escape") {
+        closeLightbox();
+    }
+});

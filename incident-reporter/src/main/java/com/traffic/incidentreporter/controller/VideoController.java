@@ -44,9 +44,11 @@ public class VideoController {
     public ResponseEntity<Map<String, String>> submitVideo(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "realtime", defaultValue = "false") boolean isRealtime,
-            @RequestParam(value = "modelType", defaultValue = "medium") String modelType) {
+            @RequestParam(value = "modelType", defaultValue = "medium") String modelType,
+            @RequestParam(value = "customLabels", defaultValue = "accident, vehicle accident") String customLabels,
+            @RequestParam(value = "confidenceThreshold", defaultValue = "0.70") Double confidenceThreshold) {
         try {
-            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ", Model=" + modelType + ")");
+            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ", Model=" + modelType + ", Labels=" + customLabels + ", Conf=" + confidenceThreshold + ")");
             
             String logFileName = UUID.randomUUID().toString() + "_" + file.getOriginalFilename();
             Path inputLocation = this.fileStorageLocation.resolve(logFileName);
@@ -57,7 +59,7 @@ public class VideoController {
 
             // Async Submit
             String pythonScript = "d:/ProjectHTGTTM_CarTrafficReport/traffic-ai-client/video_processor.py";
-            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime, modelType);
+            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime, modelType, customLabels, confidenceThreshold);
 
             Map<String, String> response = new HashMap<>();
             response.put("taskId", taskId);

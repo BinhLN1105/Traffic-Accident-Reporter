@@ -26,7 +26,8 @@ logger = logging.getLogger("server")
 MODELS = {}
 MODEL_PATHS = {
     "small": "model/small/best.pt",
-    "medium": "model/medium/best.pt"
+    "medium": "model/medium/best.pt",
+    "mediumv2": "model/medium/mediumv2.pt"
 }
 
 def get_model(model_type="medium"):
@@ -56,39 +57,42 @@ pcs = set()
 # --- BATCH WORKER ---
 from collections import deque
 
-def process_video_task(job_id, input_path, output_path, model_type="medium"):
-    print(f"[{job_id}] Starting BATCH processing: {input_path} -> {output_path} (Model: {model_type})")
-    jobs[job_id]['status'] = 'PROCESSING'
-    jobs[job_id]['progress'] = 0
-    
+def process_video_task(input_path, output_path, job_id, is_realtime, model_type="medium", custom_labels="accident, vehicle accident", confidence_threshold=0.70):
     try:
+        jobs[job_id]['status'] = 'PROCESSING'
+        
+        # Parse custom labels
+        target_labels = [l.strip().lower() for l in custom_labels.split(',') if l.strip()]
+        print(f"[{job_id}] Target Labels: {target_labels} | Conf Threshold: {confidence_threshold}")
+
+        model = get_model(model_type)
+
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
             raise Exception("Cannot open video file")
 
-        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps    = cap.get(cv2.CAP_PROP_FPS) or 30
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        # Codec
-        fourcc_code = 'VP80'
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*fourcc_code)
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        except:
-            print("VP80 codec failed, falling back to mp4v")
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-        # Variables for analysis
-        frame_count = 0
-        incidents = []
         
-        # Snapshot Logic: Before, During, After
-        frame_buffer = deque(maxlen=100) # ~3.3 sec buffer
-        snapshot_state = 'SEARCHING' # SEARCHING -> CAPTURING_AFTER -> DONE
+        fourcc = cv2.VideoWriter_fourcc(*'vp80') 
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        incidents = []
+        frame_count = 0
+        
+        # Snapshot Configuration
+        FPS = 30
+        BEFORE_SECONDS = 3
+        AFTER_SECONDS = 3
+        BUFFER_SIZE = FPS * BEFORE_SECONDS
+        AFTER_FRAMES = FPS * AFTER_SECONDS
+
+        frame_buffer = deque(maxlen=BUFFER_SIZE) 
+        snapshot_state = 'SEARCHING'
         frames_since_incident = 0
+        consecutive_accident_frames = 0 # Temporal consistency counter
         snapshot_paths = []
         
         # Data dir
@@ -105,7 +109,6 @@ def process_video_task(job_id, input_path, output_path, model_type="medium"):
             frame_buffer.append(frame.copy())
 
             # Inference
-            model = get_model(model_type)
             results = model(frame, verbose=False)
             current_incident_label = None
             current_conf = 0
@@ -117,22 +120,25 @@ def process_video_task(job_id, input_path, output_path, model_type="medium"):
                 for result in results:
                     for box in result.boxes:
                         conf = float(box.conf[0])
-                        if conf > 0.5:
-                            cls_id = int(box.cls[0])
-                            label = model.names[cls_id]
+                        cls_id = int(box.cls[0])
+                        label = model.names[cls_id]
+                        
+                        # Filter by custom labels
+                        if label.lower() in target_labels and conf > 0.5:
                             incidents.append({
                                 "time": frame_count / fps,
                                 "label": label,
                                 "confidence": conf
                             })
                             
-                            # Snapshot logic: STRICTER condition
-                            # Capture 'accident' or 'vehicle accident' with high confidence (> 0.70)
-                            # 0.70 allows capturing the "vehicle accident 0.72" case while avoiding low conf noise
-                            is_accident = "accident" in label.lower() or "vehicle accident" in label.lower()
+                            # Snapshot logic: use dynamic confidence_threshold
+                            if conf >= confidence_threshold:
+                                consecutive_accident_frames += 1
+                            else:
+                                consecutive_accident_frames = 0
                             
                             # Use state check instead of missing flag
-                            if snapshot_state == 'SEARCHING' and is_accident and conf >= 0.70:
+                            if snapshot_state == 'SEARCHING' and consecutive_accident_frames >= 5:
                                 current_incident_label = label
                                 current_conf = conf
 
@@ -254,6 +260,8 @@ def process_video():
     output_path = data.get('outputPath') # Optional for Realtime, Required for Batch
     is_realtime = data.get('realtime', False)
     model_type = data.get('modelType', 'medium') # Default to medium
+    custom_labels = data.get('customLabels', 'accident, vehicle accident')
+    confidence_threshold = float(data.get('confidenceThreshold', 0.70))
     
     if not input_path:
         return jsonify({"error": "Missing inputPath"}), 400
@@ -281,11 +289,13 @@ def process_video():
             "type": "BATCH",
             "status": "QUEUED",
             "progress": 0,
-            "modelType": model_type
+            "modelType": model_type,
+            "customLabels": custom_labels,
+            "confidenceThreshold": confidence_threshold
         }
         
         # Start Thread
-        worker = threading.Thread(target=process_video_task, args=(job_id, input_path, output_path, model_type))
+        worker = threading.Thread(target=process_video_task, args=(input_path, output_path, job_id, False, model_type, custom_labels, confidence_threshold))
         worker.daemon = True
         worker.start()
 

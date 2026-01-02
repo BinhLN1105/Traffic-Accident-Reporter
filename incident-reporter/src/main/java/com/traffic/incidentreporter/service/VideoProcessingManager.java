@@ -57,13 +57,15 @@ public class VideoProcessingManager {
 
     private final Map<String, TaskStatus> tasks = new ConcurrentHashMap<>();
 
-    public String submitTask(String inputPath, String outputPath, String pythonScriptPath, boolean isRealtime, String modelType) {
+    public String submitTask(String inputPath, String outputPath, String pythonScriptPath, boolean isRealtime, String modelType, String customLabels, Double confidenceThreshold) {
         try {
             Map<String, Object> request = new HashMap<>();
             request.put("inputPath", inputPath);
             request.put("outputPath", outputPath);
             request.put("realtime", isRealtime);
             request.put("modelType", modelType);
+            request.put("customLabels", customLabels);
+            request.put("confidenceThreshold", confidenceThreshold);
 
             ResponseEntity<Map> response = restTemplate.postForEntity(PYTHON_SERVER_URL + "/process", request, Map.class);
             

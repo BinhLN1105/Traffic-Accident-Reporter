@@ -37,9 +37,20 @@ class TrafficMonitorApp(QMainWindow):
         self.layout.addWidget(self.lbl_model)
 
         self.combo_model = QComboBox(self)
-        self.combo_model.addItems(["Standard (Small)", "Premium (Medium)"])
+        self.combo_model.addItems(["Standard (Small)", "Premium (Medium)", "Premium V2 (New)"])
         self.combo_model.setCurrentIndex(1) # Default to Premium
         self.layout.addWidget(self.combo_model)
+
+        # Confidence Threshold Slider
+        self.lbl_conf = QLabel("Confidence Threshold: 0.70", self)
+        self.layout.addWidget(self.lbl_conf)
+        
+        from PyQt6.QtWidgets import QSlider
+        self.slider_conf = QSlider(Qt.Orientation.Horizontal, self)
+        self.slider_conf.setRange(10, 100) # 0.10 to 1.00
+        self.slider_conf.setValue(70)
+        self.slider_conf.valueChanged.connect(self.update_conf_label)
+        self.layout.addWidget(self.slider_conf)
 
         self.btn_start = QPushButton("Start Detection", self)
         self.btn_start.clicked.connect(self.start_detection)
@@ -88,9 +99,13 @@ class TrafficMonitorApp(QMainWindow):
 
     def start_detection(self):
         # Determine model path
-        if self.combo_model.currentIndex() == 1:
+        idx = self.combo_model.currentIndex()
+        if idx == 1:
              model_path = 'model/medium/best.pt'
              self.log("Using Premium Model (Medium)")
+        elif idx == 2:
+             model_path = 'model/medium/mediumv2.pt'
+             self.log("Using Premium V2 Model (New)")
         else:
              model_path = 'model/small/best.pt' 
              self.log("Using Standard Model (Small)") 
@@ -100,7 +115,8 @@ class TrafficMonitorApp(QMainWindow):
         else:
             self.log(f"Processing File: {self.source}")
         
-        self.thread = DetectionThread(model_path=model_path, source=self.source, save_path=self.output_path)
+        conf_threshold = self.slider_conf.value() / 100.0
+        self.thread = DetectionThread(model_path=model_path, source=self.source, save_path=self.output_path, conf_threshold=conf_threshold)
         self.thread.change_pixmap_signal.connect(self.update_image)
         self.thread.detection_signal.connect(self.handle_detection)
         self.thread.finished.connect(self.on_process_finished) # Handle completion
@@ -129,6 +145,9 @@ class TrafficMonitorApp(QMainWindow):
     def update_image(self, cv_img):
         qt_img = self.convert_cv_qt(cv_img)
         self.image_label.setPixmap(qt_img)
+
+    def update_conf_label(self, value):
+        self.lbl_conf.setText(f"Confidence Threshold: {value / 100.0:.2f}")
 
     @pyqtSlot(str, str)
     def handle_detection(self, class_name, image_path):

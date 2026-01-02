@@ -32,3 +32,4 @@ env/
 
 # Remove commit git model over 100MB
 traffic-ai-client/model/medium/best.pt
+traffic-ai-client/model/medium/mediumv2.pt
