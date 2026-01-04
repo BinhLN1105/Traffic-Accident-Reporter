@@ -6,7 +6,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from ultralytics import YOLO
 import numpy as np
 
-# DATA_DIR = "d:/ProjectHTGTTM_CarTrafficReport/data" (Dynamic approach below)
+# Tạo thư mục data nếu chưa có
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 if not os.path.exists(DATA_DIR):
@@ -28,39 +28,38 @@ class DetectionThread(QThread):
         self.out = None
 
     def run(self):
-        # Parse labels
         target_labels = [l.strip().lower() for l in self.custom_labels.split(',') if l.strip()]
-        print(f"Tracking labels: {target_labels} | Conf: {self.conf_threshold}")
         
-        # ... [Load Model & Video] ...
-
-        # Load Model
+        # 1. Load Model
         try:
             print(f"Loading model from {self.model_path}...")
             self.model = YOLO(self.model_path)
-            # ... 
         except Exception as e:
             print(f"Error loading model: {e}")
             return
 
-        # Open Source
+        # 2. Open Video Source
         cap = cv2.VideoCapture(self.source)
         
-        # Setup Video Writer if save_path is provided
+        # Setup Video Writer
         if self.save_path and cap.isOpened():
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            # Resize output nếu cần để giảm dung lượng
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             self.out = cv2.VideoWriter(self.save_path, fourcc, fps, (width, height))
         
+        # --- LOGIC CONFIG ---
         last_alert_time = 0
         alert_cooldown = 30 
         
-        # Snapshot Logic ...
         FPS = 30
-        BEFORE_SECONDS = 3
-        AFTER_SECONDS = 3
+        # 2 giây trước tai nạn
+        BEFORE_SECONDS = 2.0
+        # 2.5 giây sau tai nạn
+        AFTER_SECONDS = 2.5
+        
         BUFFER_SIZE = FPS * BEFORE_SECONDS
         AFTER_FRAMES = FPS * AFTER_SECONDS
         
@@ -72,78 +71,103 @@ class DetectionThread(QThread):
         snapshot_state = "IDLE"
         frames_since_incident = 0
         current_incident_label = ""
+        current_sequence_id = 0
         
+        # Lưu trữ kết quả cũ để vẽ lên frame bị skip (tránh nhấp nháy)
+        last_boxes = [] 
+
         while self.running:
             ret, frame = cap.read()
             if not ret: break
 
-            # Appending to buffer MUST happen every frame to ensure valid history
+            # Luôn thêm frame vào buffer (quan trọng cho ảnh Before)
             frame_buffer.append(frame.copy())
-
             frame_count += 1
-            annotated_frame = frame
             
-            # --- Frame Skipping for Inference ---
-            if frame_count % SKIP_FRAMES == 0:
-                # YOLO Inference
-                results = self.model(frame, verbose=False)
-                annotated_frame = results[0].plot()
+            # Mặc định hình hiển thị là frame gốc
+            annotated_frame = frame.copy() 
 
-                # Check for detections
+            # --- A. PHẦN NHẬN DIỆN (Chỉ chạy mỗi 3 frame) ---
+            if frame_count % SKIP_FRAMES == 0:
+                # Dùng track để ổn định ID
+                results = self.model.track(frame, persist=True, verbose=False, conf=self.conf_threshold)
+                
+                # Cập nhật danh sách box mới nhất
+                last_boxes = []
+                
+                # Kiểm tra detection
                 current_time = time.time()
                 is_incident = False
                 detected_label = ""
                 
-                if snapshot_state == "IDLE" and (current_time - last_alert_time > alert_cooldown):
-                    for result in results:
-                         for box in result.boxes:
-                            class_id = int(box.cls[0])
-                            label = self.model.names[class_id]
-                            conf = float(box.conf[0])
-                            
-                            # Use Custom Labels & Confidence Threshold
-                            if conf >= self.conf_threshold and label.lower() in target_labels: 
-                                 is_incident = True
-                                 detected_label = label
-                                 break
-                
-                # STATE MACHINE updates
-                if is_incident and snapshot_state == "IDLE":
+                for result in results:
+                    for box in result.boxes:
+                        # Lưu thông tin box để vẽ
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        cls_id = int(box.cls[0])
+                        label = self.model.names[cls_id]
+                        conf = float(box.conf[0])
+                        
+                        # Lưu vào list để vẽ lại ở các frame sau
+                        last_boxes.append((x1, y1, x2, y2, label, conf))
+
+                        # Logic phát hiện tai nạn
+                        if snapshot_state == "IDLE" and (current_time - last_alert_time > alert_cooldown):
+                            if label.lower() in target_labels:
+                                is_incident = True
+                                detected_label = label
+
+                # --- STATE MACHINE (Xử lý sự kiện tai nạn) ---
+                if is_incident:
                     snapshot_state = "WAITING_FOR_AFTER"
                     frames_since_incident = 0
                     current_incident_label = detected_label
                     last_alert_time = current_time
+                    current_sequence_id = int(time.time())
                     
-                    sequence_id = int(time.time())
-                    self.current_sequence_id = sequence_id 
-                    
-                    # 1. Save BEFORE (Oldest in buffer)
+                    print(f"!!! Incident Detected: {detected_label}")
+
+                    # 1. Save BEFORE (Lấy frame cũ nhất trong buffer)
                     if len(frame_buffer) > 0:
-                        path_before = os.path.join(DATA_DIR, f"{sequence_id}_{detected_label}_1_before.jpg")
+                        path_before = os.path.join(DATA_DIR, f"{current_sequence_id}_{detected_label}_1_before.jpg")
                         cv2.imwrite(path_before, frame_buffer[0])
                     
-                    # 2. Save DURING (Current)
-                    path_during = os.path.join(DATA_DIR, f"{sequence_id}_{detected_label}_2_during.jpg")
+                    # 2. Save DURING (Frame hiện tại)
+                    path_during = os.path.join(DATA_DIR, f"{current_sequence_id}_{detected_label}_2_during.jpg")
                     cv2.imwrite(path_during, frame)
                     
+                    # Gửi signal báo UI
                     self.detection_signal.emit(detected_label, path_during)
-                
-            elif snapshot_state == "WAITING_FOR_AFTER":
+
+            # --- B. PHẦN VẼ LẠI (Chạy MỌI frame để chống nhấp nháy) ---
+            # Vẽ lại các box từ lần nhận diện gần nhất lên frame hiện tại
+            for (x1, y1, x2, y2, label, conf) in last_boxes:
+                # Chọn màu (đỏ cho tai nạn, xanh cho xe thường)
+                color = (0, 0, 255) if label.lower() in target_labels else (0, 255, 0)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(annotated_frame, f"{label} {conf:.2f}", (x1, y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            # --- C. STATE MACHINE UPDATE (Chạy MỌI frame) ---
+            # Sửa lỗi logic: Đếm frame phải nằm ngoài khối if frame_count % SKIP
+            if snapshot_state == "WAITING_FOR_AFTER":
                 frames_since_incident += 1
                 if frames_since_incident >= AFTER_FRAMES:
                     # 3. Save AFTER
-                    path_after = os.path.join(DATA_DIR, f"{self.current_sequence_id}_{current_incident_label}_3_after.jpg")
+                    path_after = os.path.join(DATA_DIR, f"{current_sequence_id}_{current_incident_label}_3_after.jpg")
                     cv2.imwrite(path_after, frame)
                     print("Sequence capture complete.")
                     snapshot_state = "IDLE"
 
-            # Update UI
+            # --- D. OUTPUT ---
+            # Gửi hình đã vẽ box ra UI
             self.change_pixmap_signal.emit(annotated_frame)
             
-            # Save Frame
+            # Ghi vào file video (nếu có)
             if self.out:
                 self.out.write(annotated_frame)
 
+        # Cleanup
         cap.release()
         if self.out:
             self.out.release()

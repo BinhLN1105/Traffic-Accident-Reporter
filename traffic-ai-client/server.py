@@ -27,7 +27,8 @@ MODELS = {}
 MODEL_PATHS = {
     "small": "model/small/best.pt",
     "medium": "model/medium/best.pt",
-    "mediumv2": "model/medium/mediumv2.pt"
+    "mediumv2": "model/medium/mediumv2.pt",
+    "mediumv3": "model/medium/mediumv3.pt"
 }
 
 def get_model(model_type="medium"):

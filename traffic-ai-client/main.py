@@ -106,6 +106,9 @@ class TrafficMonitorApp(QMainWindow):
         elif idx == 2:
              model_path = 'model/medium/mediumv2.pt'
              self.log("Using Premium V2 Model (New)")
+        elif idx == 3:
+             model_path = 'model/medium/mediumv3.pt'
+             self.log("Using Premium V3 Model (New)")
         else:
              model_path = 'model/small/best.pt' 
              self.log("Using Standard Model (Small)") 
