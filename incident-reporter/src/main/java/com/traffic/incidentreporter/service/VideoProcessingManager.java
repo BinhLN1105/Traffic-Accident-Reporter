@@ -205,6 +205,23 @@ public class VideoProcessingManager {
                                             incident.setDescription(aiReport); 
                                             incident.setLocation("Camera-01 (Video Analysis)");
                                             incident.setImageUrl("/api/videos/download/" + new File(primarySnapshotPath).getName()); 
+                                            
+                                            // NEW: Set videoUrl
+                                            incident.setVideoUrl("/api/videos/download/" + new File(outputPath).getName());
+                                            
+                                            // NEW: Set snapshotUrls as JSON array
+                                            if (snapshotPaths != null && !snapshotPaths.isEmpty()) {
+                                                ObjectMapper snapshotMapper = new ObjectMapper();
+                                                List<String> snapshotUrlList = new ArrayList<>();
+                                                for (String path : snapshotPaths) {
+                                                    snapshotUrlList.add("/api/videos/download/" + new File(path).getName());
+                                                }
+                                                incident.setSnapshotUrls(snapshotMapper.writeValueAsString(snapshotUrlList));
+                                            }
+                                            
+                                            // NEW: Set aiReport (full AI analysis)
+                                            incident.setAiReport(aiReport);
+                                            
                                             incident.setAlertSent(false);
 
                                             incidentRepository.save(incident);

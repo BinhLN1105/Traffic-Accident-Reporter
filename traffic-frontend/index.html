@@ -22,6 +22,13 @@
                 <span class="icon">🚦</span>
                 <h1>Incident Reporter</h1>
             </div>
+            <div class="theme-toggle" onclick="toggleTheme()" title="Toggle Theme">
+                <div class="theme-toggle-track">
+                    <div class="theme-toggle-thumb">
+                        <span class="theme-toggle-icon">🌙</span>
+                    </div>
+                </div>
+            </div>
             <div class="status" id="connection-status">
                 <span class="dot"></span> Connecting...
             </div>
@@ -56,10 +63,16 @@
                 <h2>Analyze Video Footage</h2>
                 
                 <div class="upload-controls">
-                    <!-- Mode Switcher -->
-                    <div style="margin-bottom: 20px;">
-                        <button id="mode-upload-btn" class="btn-primary" onclick="switchMode('upload')" style="margin-right: 10px;">📂 Video Analysis</button>
-                        <button id="mode-live-btn" class="btn-secondary" onclick="switchMode('live')">📹 Live Monitor</button>
+                    <!-- Mode Switcher - Tab Style -->
+                    <div class="mode-tabs" style="margin-bottom: 20px; width: 100%;">
+                        <button id="mode-upload-btn" class="tab-btn active" onclick="switchMode('upload')">
+                            <span class="tab-icon">⚡</span>
+                            <span>Batch Analysis</span>
+                        </button>
+                        <button id="mode-live-btn" class="tab-btn" onclick="switchMode('live')">
+                            <span class="tab-icon">▶️</span>
+                            <span>Real-time Stream</span>
+                        </button>
                     </div>
 
                     <div id="upload-input-section" class="file-input-wrapper">
@@ -69,7 +82,7 @@
                     <!-- Model Selection -->
                     <!-- Model Selection -->
                     <div id="model-selection-container" class="hidden" style="margin-top: 15px; text-align: center; width: 100%;">
-                        <label for="model-select" style="margin-right: 10px; color: #ccc;">AI Model:</label>
+                        <label for="model-select" style="margin-right: 10px; color: var(--text-secondary);">AI Model:</label>
                         <!-- Model Selector -->
                     <div class="input-group" style="display: inline-block;">
                         <select id="model-select">
@@ -81,23 +94,30 @@
                     </div>
                     </div>
                     
-                    <!-- Confidence Threshold Slider -->
-                    <div id="confidence-container"  style="margin-top: 15px; text-align: center; width: 100%;">
-                        <label for="conf-threshold" style="color: #ccc; font-size: 0.9rem;">Confidence: <span id="conf-value" style="color: var(--accent-orange); font-weight: bold;">0.70</span></label>
+                    <!-- Confidence Threshold Slider with Tooltip -->
+                    <div id="confidence-container" style="margin-top: 15px; text-align: center; width: 100%; position: relative;">
+                        <label for="conf-threshold" style="color: var(--text-secondary); font-size: 0.9rem;">
+                            Confidence: 
+                            <span id="conf-value" style="color: var(--accent-orange); font-weight: bold;">0.70</span>
+                            <button class="tooltip-btn" onmouseenter="showTooltip()" onmouseleave="hideTooltip()" onclick="toggleTooltip()">?</button>
+                        </label>
+                        <div id="confidence-tooltip" class="tooltip hidden">
+                            <strong>Confidence Threshold</strong><br>
+                            Xác định mức độ chắc chắn tối thiểu (0-100%) để AI báo cáo phát hiện. 
+                            Giá trị cao hơn giảm cảnh báo sai nhưng có thể bỏ lỡ một số sự cố.
+                        </div>
                         <br/>
                         <input type="range" id="conf-threshold" min="0.1" max="1.0" step="0.05" value="0.70" 
                                style="width: 80%; cursor: pointer; accent-color: var(--accent-orange);"
                                oninput="document.getElementById('conf-value').innerText = this.value">
                     </div>
                     
-                    <!-- NEW: Two Options for Analysis -->
-                    <div id="analysis-options" class="hidden" style="margin-top: 15px; display: flex; gap: 10px; justify-content: center; width: 100%;">
-                         <button id="analyze-stream-btn" type="button" class="btn-primary" onclick="startAnalysis(true)" style="background: var(--accent-orange);">
-                            ▶️ Stream (Real-time)
-                        </button>
-                        <button id="analyze-batch-btn" type="button" class="btn-primary" onclick="startAnalysis(false)">
-                            ⚡ Analyst (Batch)
-                        </button>
+                    <!-- Single Action Button - changes based on mode -->
+                    <div id="analysis-options" class="hidden" style="margin-top: 20px; display: flex; gap: 15px; justify-content: center; width: 100%;">
+                         <button id="analyze-btn" type="button" class="action-btn batch-btn" onclick="startCurrentModeAnalysis()">
+                            <span class="btn-icon" id="analyze-btn-icon">⚡</span>
+                            <span id="analyze-btn-text">Start Analysis</span>
+                         </button>
                     </div>
                 </div>
                 
@@ -135,10 +155,41 @@
                 <div id="video-result" class="video-result hidden">
                     <h3>✅ Analysis Complete</h3>
                     
-                    <!-- AI Report Section -->
-                    <div id="ai-report-container" class="hidden" style="margin-bottom: 15px; padding: 15px; background: rgba(0,0,0,0.3); border-left: 4px solid var(--accent-blue); border-radius: 4px;">
-                        <h4 style="color: var(--accent-blue); margin-bottom: 8px;">🤖 AI Incident Report</h4>
-                        <p id="ai-report-text" style="font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap;">Analysis...</p>
+                    <!-- NEW: Create Report Button (Initial State) -->
+                     <div id="create-report-section" style="text-align: center; margin-bottom: 20px;">
+                        <button id="btn-create-report" class="btn-primary" onclick="generateAIReport()" style="background: var(--accent-blue); padding: 12px 24px; font-size: 1.1rem;">
+                            📝 Create AI Report
+                        </button>
+                    </div>
+
+                    <!-- NEW: Loading State for Report -->
+                    <div id="report-loading" class="hidden" style="text-align: center; margin: 20px 0;">
+                        <div class="spinner" style="width: 40px; height: 40px; border-width: 4px; margin: 0 auto;"></div>
+                        <p style="margin-top: 10px; color: var(--accent-blue);">Generating comprehensive analysis...</p>
+                    </div>
+
+                    <!-- AI Report Section (Hidden until generated) -->
+                    <div id="ai-report-container" class="hidden" style="margin-bottom: 15px; padding: 20px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+                            <h2 style="color: var(--accent-blue); margin: 0;">📋 Incident Report</h2>
+                            <button onclick="exportToPDF()" class="btn-secondary" style="font-size: 0.9rem;">⬇️ Export PDF</button>
+                        </div>
+                        
+                        <div id="report-content" style="text-align: left;">
+                            <h4 style="color: var(--text-secondary); margin-bottom: 5px;">Summary</h4>
+                            <!-- Summary view (collapsed by default) -->
+                            <div id="ai-report-summary" style="font-size: 1rem; line-height: 1.6; color: var(--text-primary); margin-bottom: 10px;"></div>
+                            <!-- Full report (hidden by default) -->
+                            <p id="ai-report-text" class="hidden" style="font-size: 1rem; line-height: 1.6; white-space: pre-wrap; color: var(--text-primary);"></p>
+                            <button id="toggle-report-btn" class="read-more-btn" onclick="toggleFullReport()" style="font-size: 0.95rem; margin-top: 8px;">
+                                Xem chi tiết báo cáo ▼
+                            </button>
+                        </div>
+                        
+                        <!-- Embedded Snapshots for PDF -->
+                         <div id="report-snapshots" style="display:flex; gap:10px; margin-top:20px; justify-content:center; flex-wrap: wrap;">
+                            <!-- Cloned images will go here for the PDF view -->
+                        </div>
                     </div>
 
                     <div class="video-preview-box" style="margin-top: 10px;">
@@ -148,16 +199,10 @@
                             Your browser does not support the video tag.
                         </video>
                         
-                        <!-- Snapshots (Before/During/After) -->
+                        <!-- Display Snapshots -->
                         <div id="snapshot-gallery" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:15px; justify-content:center;">
                             <!-- Images injected by JS -->
                         </div>
-                    </div>
-                    
-                    <div class="actions">
-                        <a id="download-link" href="#" class="btn-download" download>
-                            <span>Download Report</span> ⬇️
-                        </a>
                     </div>
                 </div>
             </div>

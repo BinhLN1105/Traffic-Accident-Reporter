@@ -2,6 +2,66 @@ const API_BASE = 'http://localhost:8080';
 const PYTHON_API_BASE = 'http://localhost:5000'; // Python Server
 let stompClient = null;
 let pc = null; // WebRTC PeerConnection
+let currentMode = 'batch'; // 'batch' or 'realtime'
+
+// ========== THEME MANAGEMENT ==========
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    
+    document.documentElement.setAttribute('data-theme', newTheme);
+    localStorage.setItem('theme', newTheme);
+    
+    // Update toggle icon
+    const icon = document.querySelector('.theme-toggle-icon');
+    if (icon) {
+        icon.textContent = newTheme === 'dark' ? '🌙' : '☀️';
+    }
+}
+
+function loadTheme() {
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    
+    // Update toggle icon
+    const icon = document.querySelector('.theme-toggle-icon');
+    if (icon) {
+        icon.textContent = savedTheme === 'dark' ? '🌙' : '☀️';
+    }
+}
+
+// ========== TOOLTIP FUNCTIONS ==========
+let tooltipTimeout;
+
+function showTooltip() {
+    clearTimeout(tooltipTimeout);
+    const tooltip = document.getElementById('confidence-tooltip');
+    if (tooltip) {
+        tooltip.classList.remove('hidden');
+        tooltip.classList.add('show');
+    }
+}
+
+function hideTooltip() {
+    tooltipTimeout = setTimeout(() => {
+        const tooltip = document.getElementById('confidence-tooltip');
+        if (tooltip) {
+            tooltip.classList.remove('show');
+            setTimeout(() => tooltip.classList.add('hidden'), 300);
+        }
+    }, 200);
+}
+
+function toggleTooltip() {
+    const tooltip = document.getElementById('confidence-tooltip');
+    if (tooltip) {
+        if (tooltip.classList.contains('show')) {
+            hideTooltip();
+        } else {
+            showTooltip();
+        }
+    }
+}
 
 // DOM Elements
 const connectionStatus = document.getElementById('connection-status');
@@ -14,6 +74,9 @@ const countTodayVal = document.getElementById('count-today');
 
 let incidentCount = 0;
 let todayCount = 0;
+let allIncidents = []; // Store all incidents for pagination
+let displayedCount = 0;
+const ITEMS_PER_PAGE = 5;
 
 function isToday(dateString) {
     const date = new Date(dateString);
@@ -22,6 +85,24 @@ function isToday(dateString) {
            date.getMonth() === today.getMonth() &&
            date.getFullYear() === today.getFullYear();
 }
+
+// --- PERSISTENCE LOGIC ---
+function saveState() {
+    const modelSelect = document.getElementById('model-select');
+    localStorage.setItem('selectedModel', modelSelect.value);
+    
+    // Cannot save full path due to security, can only save filename as hint
+    // But we can't restore the file object. 
+    // We just ensure model persists.
+}
+
+function restoreState() {
+    const savedModel = localStorage.getItem('selectedModel');
+    if (savedModel) {
+        document.getElementById('model-select').value = savedModel;
+    }
+}
+
 
 // --- WEBRTC LOGIC ---
 
@@ -83,7 +164,8 @@ async function startWebRTC(jobId, inputPath) {
             body: JSON.stringify({
                 sdp: pc.localDescription.sdp,
                 type: pc.localDescription.type,
-                jobId: pythonJobId // Use Python's ID
+                jobId: pythonJobId,
+                // Pass jobId to help server locate the correct job
             }),
             headers: { 'Content-Type': 'application/json' }
         });
@@ -115,6 +197,10 @@ function stopWebRTC() {
 
 function handleNewIncident(incident) {
     console.log("New Incident:", incident);
+    
+    // Add to allIncidents array at the beginning (newest first)
+    allIncidents.unshift(incident);
+    
     incidentCount++;
     countTotalVal.innerText = incidentCount;
     if (isToday(incident.timestamp)) {
@@ -122,7 +208,9 @@ function handleNewIncident(incident) {
         countTodayVal.innerText = todayCount;
     }
     showAlert(incident);
-    addToFeed(incident);
+    addToFeed(incident, true); // Mark as new for animation
+    displayedCount++; // Increment since we added a new item
+    updateLoadMoreButton(); // Update button text
 }
 
 function showAlert(incident) {
@@ -136,25 +224,177 @@ function dismissAlert() {
     alertBanner.classList.add('hidden');
 }
 
-function addToFeed(incident) {
+function addToFeed(incident, isNew = false) {
     const card = document.createElement('div');
-    card.className = 'incident-card new-item';
+    card.className = 'incident-card' + (isNew ? ' new-item' : '');
     const time = new Date(incident.timestamp).toLocaleTimeString();
     const typeClass = incident.type === 'Fire' ? 'badge-fire' : 'badge-accident';
+    
+    // Truncate description for summary
+    const description = incident.description || incident.aiReport || 'No description';
+    const shortDesc = description.length > 100 ? description.substring(0, 100) + '...' : description;
+    const hasMore = description.length > 100;
 
     card.innerHTML = `
-        <img src="${incident.imageUrl ? (API_BASE + incident.imageUrl) : 'https://via.placeholder.com/150'}" alt="Snapshot" onclick="openLightbox(this.src)" style="cursor: pointer;">
+        <img src="${incident.imageUrl ? (API_BASE + incident.imageUrl) : 'https://via.placeholder.com/150'}" alt="Snapshot" onclick="event.stopPropagation(); openLightbox(this.src)" style="cursor: pointer;">
         <div class="info">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
                 <span class="badge ${typeClass}">${incident.type}</span>
                 <span class="time">${time}</span>
             </div>
-            <p class="description">${incident.description}</p>
+            <p class="description" data-full="${description.replace(/"/g, '&quot;')}">${shortDesc}</p>
+            ${hasMore ? '<button class="read-more-btn" onclick="event.stopPropagation(); toggleDescription(this)">Xem chi tiết ▼</button>' : ''}
             <span class="location">📍 ${incident.location}</span>
         </div>
     `;
-    incidentList.insertBefore(card, incidentList.firstChild);
+    // Make card clickable for history playback
+    card.onclick = () => loadIncidentIntoView(incident);
+    
+    // If new real-time incident, add to top. Otherwise append to maintain order
+    if (isNew) {
+        incidentList.insertBefore(card, incidentList.firstChild);
+    } else {
+        incidentList.appendChild(card);
+    }
 }
+
+// Toggle description expand/collapse
+function toggleDescription(btn) {
+    const descElement = btn.previousElementSibling;
+    const fullText = descElement.getAttribute('data-full');
+    const currentText = descElement.textContent;
+    
+    if (btn.textContent.includes('▼')) {
+        descElement.textContent = fullText;
+        btn.textContent = 'Thu gọn ▲';
+    } else {
+        const shortText = fullText.substring(0, 100) + '...';
+        descElement.textContent = shortText;
+        btn.textContent = 'Xem chi tiết ▼';
+    }
+}
+
+// --- HISTORY PLAYBACK ---
+function loadIncidentIntoView(incident) {
+    console.log("Loading history item:", incident);
+    
+    // 1. Hide Input/Live sections, show Result
+    document.getElementById('upload-input-section').classList.add('hidden');
+    document.getElementById('live-stream-section').classList.add('hidden');
+    document.getElementById('video-preview-container').classList.add('hidden');
+    document.getElementById('processing-status').classList.add('hidden');
+    document.getElementById('analysis-options').classList.add('hidden'); // Hide buttons
+    
+    const resultDiv = document.getElementById('video-result');
+    resultDiv.classList.remove('hidden');
+    
+    // 2. Populate Report Area
+    const aiReportContainer = document.getElementById('ai-report-container');
+    const aiReportText = document.getElementById('ai-report-text');
+    const reportSnapshots = document.getElementById('report-snapshots');
+    
+    // Hide "Create Report" button since it's already done
+    document.getElementById('create-report-section').classList.add('hidden'); 
+    
+    if (incident.description || incident.aiReport) {
+         aiReportContainer.classList.remove('hidden');
+         const reportContent = incident.aiReport || incident.description || "No detailed report available.";
+         const header = `Report Date: ${new Date(incident.timestamp).toLocaleString()}\n\n`;
+         
+         // Clean markdown and set up collapsible view
+         const cleanedContent = cleanMarkdown(reportContent);
+         const summary = extractSummary(cleanedContent);
+         
+         const reportSummary = document.getElementById('ai-report-summary');
+         const toggleBtn = document.getElementById('toggle-report-btn');
+         
+         reportSummary.textContent = summary;
+         aiReportText.textContent = header + cleanedContent;
+         
+         // Reset to summary view
+         aiReportText.classList.add('hidden');
+         reportSummary.classList.remove('hidden');
+         toggleBtn.textContent = 'Xem chi tiết báo cáo ▼';
+         toggleBtn.style.display = cleanedContent.length > summary.length + 100 ? 'block' : 'none';
+         
+         // Populate report snapshots for PDF
+         reportSnapshots.innerHTML = '';
+         
+         // NEW: Parse snapshotUrls if available
+         if (incident.snapshotUrls) {
+             try {
+                 const snapshotArray = JSON.parse(incident.snapshotUrls);
+                 snapshotArray.forEach(url => {
+                     const img = document.createElement('img');
+                     img.src = API_BASE + url;
+                     img.style.height = '150px';
+                     img.style.margin = '5px';
+                     reportSnapshots.appendChild(img);
+                 });
+             } catch (e) {
+                 console.error("Error parsing snapshotUrls", e);
+             }
+         } else if(incident.imageUrl) {
+             // Fallback to single image
+             const img = document.createElement('img');
+             img.src = API_BASE + incident.imageUrl;
+             img.style.maxWidth = '200px';
+             img.style.border = '1px solid #ccc';
+             reportSnapshots.appendChild(img);
+         }
+    } else {
+        aiReportContainer.classList.add('hidden');
+    }
+
+    // 3. Populate Video/Snapshots
+    const processedVideo = document.getElementById('processed-video');
+    
+    // NEW: Show videoUrl if available
+    if (incident.videoUrl) {
+        processedVideo.src = API_BASE + incident.videoUrl;
+        processedVideo.style.display = 'block';
+    } else if (incident.videoUrl) { // Legacy fallback
+        processedVideo.src = API_BASE + incident.videoUrl;
+        processedVideo.style.display = 'block';
+    } else {
+        processedVideo.style.display = 'none';
+    }
+
+    const gallery = document.getElementById('snapshot-gallery');
+    gallery.innerHTML = '';
+    
+    // NEW: Display all snapshots from snapshotUrls
+    if (incident.snapshotUrls) {
+        try {
+            const snapshotArray = JSON.parse(incident.snapshotUrls);
+            const labels = ["Before", "During", "After"];
+            
+            snapshotArray.forEach((url, idx) => {
+                const wrap = document.createElement('div');
+                wrap.style.textAlign = 'center';
+                const label = (idx < 3) ? labels[idx] : `Snapshot ${idx+1}`;
+                
+                wrap.innerHTML = `<img src="${API_BASE + url}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">
+                                 <div style="font-size:0.8em; color:#aaa; margin-top:2px;">${label}</div>`;
+                gallery.appendChild(wrap);
+            });
+        } catch (e) {
+            console.error("Error parsing snapshotUrls", e);
+            // Fallback to single image
+            if (incident.imageUrl) {
+                const wrap = document.createElement('div');
+                wrap.innerHTML = `<img src="${API_BASE + incident.imageUrl}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">`;
+                gallery.appendChild(wrap);
+            }
+        }
+    } else if (incident.imageUrl) {
+        // Fallback to single legacy image
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `<img src="${API_BASE + incident.imageUrl}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">`;
+        gallery.appendChild(wrap);
+    }
+}
+
 
 // Connect to WebSocket
 function connect() {
@@ -198,22 +438,61 @@ async function loadHistory() {
         if(res.ok) {
             const data = await res.json();
             console.log("History loaded:", data.length, "items");
-            // Data is list of incidents
-            // Sort by time desc if not already
-            data.reverse().forEach(inc => {
-                addToFeed(inc);
-                incidentCount++;
-                if (isToday(inc.timestamp)) {
-                    todayCount++;
-                }
+            
+            // Sort by timestamp descending (newest first)
+            allIncidents = data.sort((a, b) => {
+                return new Date(b.timestamp) - new Date(a.timestamp);
             });
+            
+            // Count stats
+            incidentCount = allIncidents.length;
+            todayCount = allIncidents.filter(inc => isToday(inc.timestamp)).length;
             countTotalVal.innerText = incidentCount;
             countTodayVal.innerText = todayCount;
+            
+            // Display only first 5 items
+            displayedCount = 0;
+            incidentList.innerHTML = ''; // Clear existing
+            loadMoreIncidents();
+            
         } else {
              console.error("Failed to load history: HTTP", res.status);
         }
     } catch (e) {
         console.error("Failed to load history", e);
+    }
+}
+
+function loadMoreIncidents() {
+    const endIndex = Math.min(displayedCount + ITEMS_PER_PAGE, allIncidents.length);
+    
+    for (let i = displayedCount; i < endIndex; i++) {
+        addToFeed(allIncidents[i], false);
+    }
+    
+    displayedCount = endIndex;
+    
+    // Show/hide Load More button
+    updateLoadMoreButton();
+}
+
+function updateLoadMoreButton() {
+    let loadMoreBtn = document.getElementById('load-more-btn');
+    
+    if (displayedCount < allIncidents.length) {
+        if (!loadMoreBtn) {
+            loadMoreBtn = document.createElement('button');
+            loadMoreBtn.id = 'load-more-btn';
+            loadMoreBtn.className = 'btn-primary';
+            loadMoreBtn.style.cssText = 'width: 100%; margin-top: 15px; padding: 12px;';
+            loadMoreBtn.textContent = `Xem thêm (${allIncidents.length - displayedCount} còn lại)`;
+            loadMoreBtn.onclick = loadMoreIncidents;
+            incidentList.parentElement.appendChild(loadMoreBtn);
+        } else {
+            loadMoreBtn.textContent = `Xem thêm (${allIncidents.length - displayedCount} còn lại)`;
+        }
+    } else if (loadMoreBtn) {
+        loadMoreBtn.remove();
     }
 }
 
@@ -233,22 +512,22 @@ function previewFile() {
         previewContainer.classList.remove('hidden');
         
         const optionsDiv = document.getElementById('analysis-options');
-       // Show hidden elements
-    document.getElementById('model-selection-container').classList.remove('hidden');
-    document.getElementById('model-selection-container').classList.remove('hidden');
-    // document.getElementById('labels-container').classList.remove('hidden'); // Removed
-    
-    // Show Analysis Options (Upload or Live)x';
         const modelDiv = document.getElementById('model-selection-container');
+        
+        // Show controls
+        modelDiv.classList.remove('hidden');
         optionsDiv.classList.remove('hidden');
         optionsDiv.style.display = 'flex';
-        modelDiv.classList.remove('hidden');
 
         statusDiv.classList.add('hidden');
         resultDiv.classList.add('hidden');
         stopWebRTC();
     }
 }
+
+// Persist model selection on change
+document.getElementById('model-select').addEventListener('change', saveState);
+
 
 async function startAnalysis(isRealtime) {
     const fileInput = document.getElementById('video-input');
@@ -276,8 +555,9 @@ async function startAnalysis(isRealtime) {
     }
 
     resultDiv.classList.add('hidden');
-    aiReportContainer.classList.add('hidden');
-    
+    document.getElementById('ai-report-container').classList.add('hidden');
+    document.getElementById('create-report-section').classList.add('hidden');
+        
     // --- UPLOAD TO JAVA (SPRING BOOT) ---
     const formData = new FormData();
     const modelType = document.getElementById('model-select').value;
@@ -307,6 +587,7 @@ async function startAnalysis(isRealtime) {
                 // Switch to Live View
                  const liveSection = document.getElementById('live-stream-section');
                  const uploadInputSection = document.getElementById('upload-input-section');
+
                  const previewContainer = document.getElementById('video-preview-container');
                  
                  uploadInputSection.classList.add('hidden');
@@ -324,8 +605,11 @@ async function startAnalysis(isRealtime) {
                 // --- BATCH MODE ---
                 sessionStorage.setItem('lastTaskId', data.taskId);
                 statusText.innerText = "Batch Analysis in Progress...";
+                // Hide options
+                optionsDiv.classList.add('hidden');
                 pollStatus(data.taskId);
             }
+
             
         } else {
              const err = await res.json();
@@ -384,11 +668,21 @@ async function pollStatus(taskId) {
             const linkData = await linkRes.json();
             
             processedVideo.src = API_BASE + linkData.downloadUrl;
-            downloadLink.href = API_BASE + linkData.downloadUrl;
+            
+            // Show "Create Report" button instead of immediate result
+            const createReportSection = document.getElementById('create-report-section');
+            createReportSection.classList.remove('hidden');
+            
+            // Store data for report generation
+            window.currentTaskData = linkData;
+            window.currentTaskId = taskId;
 
-            // Render Snapshots
+            // Render Snapshots immediately
             const gallery = document.getElementById('snapshot-gallery');
-            gallery.innerHTML = ''; // Clear prev
+            const reportSnapshots = document.getElementById('report-snapshots');
+            gallery.innerHTML = ''; 
+            reportSnapshots.innerHTML = '';
+            
             if (linkData.snapshots && linkData.snapshots.length > 0) {
                 const labels = ["Before", "During", "After"];
                 linkData.snapshots.forEach((url, idx) => {
@@ -397,20 +691,25 @@ async function pollStatus(taskId) {
                     
                     const label = (idx < 3) ? labels[idx] : `Snapshot ${idx+1}`;
                     
+                    // Main Gallery
                     wrap.innerHTML = `
                         <img src="${API_BASE + url}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">
                         <div style="font-size:0.8em; color:#aaa; margin-top:2px;">${label}</div>
                     `;
                     gallery.appendChild(wrap);
+                    
+                    // Hidden Report Gallery (for PDF)
+                    const imgForReport = document.createElement('img');
+                    imgForReport.src = API_BASE + url;
+                    imgForReport.style.height = '150px';
+                    imgForReport.style.margin = '5px';
+                    reportSnapshots.appendChild(imgForReport);
                 });
             }
+            
+            // Hide pre-existing report container until generated
+            aiReportContainer.classList.add('hidden');
 
-            if (linkData.aiReport) {
-                aiReportContainer.classList.remove('hidden');
-                aiReportText.innerHTML = linkData.aiReport;
-            } else {
-                aiReportContainer.classList.add('hidden');
-            }
         } else if (status.status === 'FAILED') {
             alert("Processing Failed");
             statusDiv.classList.add('hidden');
@@ -426,11 +725,165 @@ async function pollStatus(taskId) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    loadTheme(); // Load saved theme preference
     connect(); // Restore Connection
     loadHistory();
+    restoreState(); // Restore Model Selection
     const lastTaskId = sessionStorage.getItem('lastTaskId');
     if (lastTaskId) { pollStatus(lastTaskId); }
 });
+
+// --- NEW REPORT FUNCTIONS ---
+
+// Helper function to clean markdown formatting
+function cleanMarkdown(text) {
+    if (!text) return '';
+    
+    // Remove markdown bold ** symbols
+    let cleaned = text.replace(/\*\*(.+?)\*\*/g, '$1');
+    
+    // Remove markdown italic * symbols (single asterisk)
+    cleaned = cleaned.replace(/(?<!\*)\*(?!\*)(.+?)\*(?!\*)/g, '$1');
+    
+    // Clean up extra newlines
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+    
+    return cleaned;
+}
+
+// Helper function to extract summary from report
+function extractSummary(text, maxLength = 300) {
+    if (!text) return '';
+    
+    // Try to find first section (Tóm tắt or Summary)
+    const summaryMatch = text.match(/(?:1\.\s*Tóm tắt.*?:|Summary:?)\s*([^\n]+(?:\n[^\n*]+)*)/i);
+    
+    if (summaryMatch && summaryMatch[1]) {
+        const summary = summaryMatch[1].trim();
+        return summary.length > maxLength ? summary.substring(0, maxLength) + '...' : summary;
+    }
+    
+    // Fallback: use first paragraph or first maxLength characters
+    const firstPara = text.split('\n\n')[0];
+    return firstPara.length > maxLength ? firstPara.substring(0, maxLength) + '...' : firstPara;
+}
+
+async function generateAIReport() {
+    const btn = document.getElementById('btn-create-report');
+    const loading = document.getElementById('report-loading');
+    const reportContainer = document.getElementById('ai-report-container');
+    const reportText = document.getElementById('ai-report-text');
+    const reportSummary = document.getElementById('ai-report-summary');
+    const toggleBtn = document.getElementById('toggle-report-btn');
+    
+    // UI Loading State
+    btn.parentElement.classList.add('hidden');
+    loading.classList.remove('hidden');
+    
+    try {
+        // If we don't have task data yet, fetch it from backend
+        if (!window.currentTaskData || !window.currentTaskData.aiReport) {
+            if (window.currentTaskId) {
+                console.log("Fetching AI report from backend...");
+                const linkRes = await fetch(`${API_BASE}/api/videos/result/${window.currentTaskId}`);
+                if (linkRes.ok) {
+                    window.currentTaskData = await linkRes.json();
+                } else {
+                    throw new Error("Failed to fetch report data");
+                }
+            }
+        }
+        
+        // Small delay for UX
+        await new Promise(resolve => setTimeout(resolve, 800));
+        
+        loading.classList.add('hidden');
+        reportContainer.classList.remove('hidden');
+        
+        if (window.currentTaskData && window.currentTaskData.aiReport) {
+             const rawText = window.currentTaskData.aiReport;
+             
+             // Clean markdown formatting
+             const cleanedText = cleanMarkdown(rawText);
+             
+             // Add date/time header
+             const header = `Report Date: ${new Date().toLocaleString()}\n\n`;
+             
+             // Extract and display summary
+             const summary = extractSummary(cleanedText);
+             reportSummary.textContent = summary;
+             
+             // Store full report (hidden)
+             reportText.textContent = header + cleanedText;
+             
+             // Show toggle button if report is long enough
+             if (reportText.textContent.length > summary.length + 100) {
+                 toggleBtn.style.display = 'block';
+             } else {
+                 toggleBtn.style.display = 'none';
+             }
+        } else {
+             reportSummary.textContent = "No AI analysis available for this video.";
+             toggleBtn.style.display = 'none';
+        }
+        
+    } catch (error) {
+        console.error("Error generating report:", error);
+        loading.classList.add('hidden');
+        reportContainer.classList.remove('hidden');
+        reportSummary.textContent = "⚠️ Error loading AI report. Please try again.";
+        toggleBtn.style.display = 'none';
+    }
+}
+
+// Toggle between summary and full report
+function toggleFullReport() {
+    const reportText = document.getElementById('ai-report-text');
+    const reportSummary = document.getElementById('ai-report-summary');
+    const toggleBtn = document.getElementById('toggle-report-btn');
+    
+    if (reportText.classList.contains('hidden')) {
+        // Show full report
+        reportText.classList.remove('hidden');
+        reportSummary.classList.add('hidden');
+        toggleBtn.textContent = 'Thu gọn báo cáo ▲';
+    } else {
+        // Show summary only
+        reportText.classList.add('hidden');
+        reportSummary.classList.remove('hidden');
+        toggleBtn.textContent = 'Xem chi tiết báo cáo ▼';
+    }
+}
+
+function exportToPDF() {
+    const reportContainer = document.getElementById('ai-report-container');
+    const originalContent = document.body.innerHTML;
+    
+    // Simple Print Logic
+    // We isolate the report container for printing
+    const printContent = reportContainer.innerHTML;
+    
+    const printWindow = window.open('', '', 'height=600,width=800');
+    printWindow.document.write('<html><head><title>Incident Report</title>');
+    printWindow.document.write('<style>');
+    printWindow.document.write('body { font-family: sans-serif; padding: 20px; color: #000; }');
+    printWindow.document.write('img { max-width: 100%; height: auto; display: block; margin: 10px auto; }');
+    printWindow.document.write('h2, h4 { color: #333; }');
+    printWindow.document.write('p { line-height: 1.6; white-space: pre-wrap; }');
+    printWindow.document.write('</style>');
+    printWindow.document.write('</head><body>');
+    printWindow.document.write(printContent);
+    printWindow.document.write('</body></html>');
+    
+    printWindow.document.close();
+    printWindow.focus();
+    // setTimeout to allow images to load in new window?
+    setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+    }, 500);
+}
+
 
 function switchMode(mode) {
     const uploadInputSection = document.getElementById('upload-input-section');
@@ -440,32 +893,60 @@ function switchMode(mode) {
     const liveSection = document.getElementById('live-stream-section');
     const uploadBtn = document.getElementById('mode-upload-btn');
     const liveBtn = document.getElementById('mode-live-btn');
+    const analyzeBtn = document.getElementById('analyze-btn');
+    const analyzeBtnIcon = document.getElementById('analyze-btn-icon');
+    const analyzeBtnText = document.getElementById('analyze-btn-text');
 
     if (mode === 'live') {
-        uploadInputSection.classList.add('hidden');
-        if(optionsDiv) optionsDiv.classList.add('hidden');
+        // Real-time Stream Mode
+        currentMode = 'realtime';
+        
+        // Update button to Stream style
+        analyzeBtn.className = 'action-btn stream-btn';
+        analyzeBtnIcon.textContent = '▶️';
+        analyzeBtnText.textContent = 'Start Stream';
+        
+        if(optionsDiv) optionsDiv.classList.remove('hidden');
+
         previewContainer.classList.add('hidden');
         resultDiv.classList.add('hidden');
         liveSection.classList.remove('hidden');
-        liveBtn.classList.remove('btn-secondary');
-        liveBtn.classList.add('btn-primary');
-        uploadBtn.classList.remove('btn-primary');
-        uploadBtn.classList.add('btn-secondary');
+        
+        // Update tab styling
+        liveBtn.classList.add('active');
+        uploadBtn.classList.remove('active');
+        
     } else {
+        // Batch Analysis Mode
+        currentMode = 'batch';
+        
+        // Update button to Batch style
+        analyzeBtn.className = 'action-btn batch-btn';
+        analyzeBtnIcon.textContent = '⚡';
+        analyzeBtnText.textContent = 'Start Analysis';
+        
         stopWebRTC();
         uploadInputSection.classList.remove('hidden');
+
         if(optionsDiv && document.getElementById('video-input').files.length > 0) {
              optionsDiv.classList.remove('hidden');
         }
         liveSection.classList.add('hidden');
-        uploadBtn.classList.remove('btn-secondary');
-        uploadBtn.classList.add('btn-primary');
-        liveBtn.classList.remove('btn-primary');
-        liveBtn.classList.add('btn-secondary');
+        
+        // Update tab styling
+        uploadBtn.classList.add('active');
+        liveBtn.classList.remove('active');
+        
         if (document.getElementById('video-input').files.length > 0) {
              previewContainer.classList.remove('hidden');
         }
     }
+}
+
+// New unified function that uses current mode
+function startCurrentModeAnalysis() {
+    const isRealtime = (currentMode === 'realtime');
+    startAnalysis(isRealtime);
 }
 // --- Lightbox Functions ---
 function openLightbox(imgSrc) {

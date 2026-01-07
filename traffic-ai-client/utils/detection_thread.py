@@ -55,8 +55,8 @@ class DetectionThread(QThread):
         alert_cooldown = 30 
         
         FPS = 30
-        # 2 giây trước tai nạn
-        BEFORE_SECONDS = 2.0
+        # 3 giây trước tai nạn
+        BEFORE_SECONDS = 3.0
         # 2.5 giây sau tai nạn
         AFTER_SECONDS = 2.5
         
