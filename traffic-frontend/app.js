@@ -562,12 +562,13 @@ async function startAnalysis(isRealtime) {
     const formData = new FormData();
     const modelType = document.getElementById('model-select').value;
     const confThreshold = document.getElementById('conf-threshold').value;
+    const autoReport = document.getElementById('auto-report').checked;
 
     formData.append('file', file);
     formData.append('realtime', isRealtime);
     formData.append('modelType', modelType);
-    // customLabels not sent, backend will use default
     formData.append('confidenceThreshold', confThreshold);
+    formData.append('autoReport', autoReport); // NEW: Send auto-report preference
 
     try {
         console.log("Uploading to Spring Boot...");
@@ -667,6 +668,7 @@ async function pollStatus(taskId) {
             const linkRes = await fetch(`${API_BASE}/api/videos/result/${taskId}`);
             const linkData = await linkRes.json();
             
+            // Use processed video (with annotations)
             processedVideo.src = API_BASE + linkData.downloadUrl;
             
             // Show "Create Report" button instead of immediate result
@@ -755,15 +757,32 @@ function cleanMarkdown(text) {
 function extractSummary(text, maxLength = 300) {
     if (!text) return '';
     
-    // Try to find first section (Tóm tắt or Summary)
-    const summaryMatch = text.match(/(?:1\.\s*Tóm tắt.*?:|Summary:?)\s*([^\n]+(?:\n[^\n*]+)*)/i);
+    // Try to extract the content after "1. Tóm tắt" or similar numbered sections
+    // Match pattern: "1. Tóm tắt..." followed by content until next numbered section or end
+    const summaryMatch = text.match(/1\.?\s*(?:Tóm tắt|Summary)[^:]*:?\s*\n?\s*([^\n]+(?:\n(?!\d+\.)[^\n]+)*)/i);
     
     if (summaryMatch && summaryMatch[1]) {
         const summary = summaryMatch[1].trim();
-        return summary.length > maxLength ? summary.substring(0, maxLength) + '...' : summary;
+        // Remove any markdown formatting
+        const cleaned = summary.replace(/\*\*/g, '').replace(/\*/g, '');
+        return cleaned.length > maxLength ? cleaned.substring(0, maxLength) + '...' : cleaned;
     }
     
-    // Fallback: use first paragraph or first maxLength characters
+    // Fallback: Try to find any text after first header/title
+    const lines = text.split('\n').filter(l => l.trim());
+    if (lines.length > 1) {
+        // Skip header lines (usually in uppercase or with special markers)
+        let startIdx = 0;
+        while (startIdx < lines.length && (lines[startIdx].includes('===') || lines[startIdx].includes('BÁO CÁO') || lines[startIdx].length < 10)) {
+            startIdx++;
+        }
+        if (startIdx < lines.length) {
+            const content = lines.slice(startIdx, startIdx + 3).join(' ');
+            return content.length > maxLength ? content.substring(0, maxLength) + '...' : content;
+        }
+    }
+    
+    // Final fallback
     const firstPara = text.split('\n\n')[0];
     return firstPara.length > maxLength ? firstPara.substring(0, maxLength) + '...' : firstPara;
 }
@@ -795,8 +814,39 @@ async function generateAIReport() {
         }
         
         // Small delay for UX
-        await new Promise(resolve => setTimeout(resolve, 800));
+        await new Promise(resolve => setTimeout(resolve, 300));
         
+        // If we don't have aiReport yet, request one from the server (on-demand)
+        if (!window.currentTaskData || !window.currentTaskData.aiReport) {
+            if (window.currentTaskId) {
+                console.log("Requesting AI report generation on-demand...");
+                
+                // Call new API endpoint to generate report
+                const genRes = await fetch(`${API_BASE}/api/videos/generate-report/${window.currentTaskId}`, {
+                    method: 'POST'
+                });
+                
+                if (genRes.ok) {
+                    const genData = await genRes.json();
+                    if (genData.success && genData.aiReport) {
+                        if (!window.currentTaskData) window.currentTaskData = {};
+                        window.currentTaskData.aiReport = genData.aiReport;
+                    } else {
+                        throw new Error(genData.error || "Failed to generate report");
+                    }
+                } else {
+                    // Fallback: try getting existing result
+                    const linkRes = await fetch(`${API_BASE}/api/videos/result/${window.currentTaskId}`);
+                    if (linkRes.ok) {
+                        window.currentTaskData = await linkRes.json();
+                    } else {
+                        throw new Error("Failed to fetch report data");
+                    }
+                }
+            }
+        }
+        
+        // Update UI after fetching/generating report
         loading.classList.add('hidden');
         reportContainer.classList.remove('hidden');
         

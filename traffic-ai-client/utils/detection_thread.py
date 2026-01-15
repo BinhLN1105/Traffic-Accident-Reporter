@@ -6,7 +6,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from ultralytics import YOLO
 import numpy as np
 
-# Giữ nguyên phần tạo thư mục
+# Root dir setup
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 if not os.path.exists(DATA_DIR):
@@ -15,6 +15,9 @@ if not os.path.exists(DATA_DIR):
 class DetectionThread(QThread):
     change_pixmap_signal = pyqtSignal(np.ndarray)
     detection_signal = pyqtSignal(str, str)
+    snapshot_saved = pyqtSignal(str, str, str)  # Signal emit 3 paths
+    process_finished_signal = pyqtSignal(dict) # NEW: Signal for analyst completion
+    progress_signal = pyqtSignal(int) # NEW: Progress percentage
 
     def __init__(self, model_path='best.pt', source=0, save_path=None, custom_labels="accident, vehicle accident", conf_threshold=0.70):
         super().__init__()
@@ -23,9 +26,15 @@ class DetectionThread(QThread):
         self.save_path = save_path
         self.custom_labels = custom_labels
         self.conf_threshold = conf_threshold
-        self.running = True
         self.model = None
+        self.running = True
+        self.paused = False
         self.out = None
+
+    def pause(self):
+        """Pause/Resume toggle"""
+        self.paused = not self.paused
+        return self.paused
 
     def run(self):
         target_labels = [l.strip().lower() for l in self.custom_labels.split(',') if l.strip()]
@@ -44,11 +53,11 @@ class DetectionThread(QThread):
             print("Cannot open video source")
             return
 
-        # --- CẤU HÌNH THỜI GIAN ĐỘNG ---
-        # Lấy FPS thực tế của video (quan trọng cho video file)
+        # --- DYNAMIC TIME CONFIG ---
         video_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) # Get total frames
         if video_fps == 0 or np.isnan(video_fps): 
-            video_fps = 30 # Fallback nếu là webcam
+            video_fps = 30 # Fallback
         
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -58,54 +67,72 @@ class DetectionThread(QThread):
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             self.out = cv2.VideoWriter(self.save_path, fourcc, video_fps, (width, height))
         
-        # Cấu hình thời gian
+        # Config
         BEFORE_SECONDS = 3.0
-        AFTER_SECONDS = 3.5 # Có thể tăng lên 3.0 hoặc 4.0 nếu tai nạn kéo dài
+        AFTER_SECONDS = 3.5 
         
-        # Tính toán số frame cần buffer dựa trên FPS thực
+        # Buffer calc
         BUFFER_SIZE = int(video_fps * BEFORE_SECONDS)
         AFTER_FRAMES_REQUIRED = int(video_fps * AFTER_SECONDS)
         
-        SKIP_FRAMES = 3 # Skip để tối ưu performance
+        SKIP_FRAMES = 3 # Optimize performance
         
         frame_buffer = deque(maxlen=BUFFER_SIZE)
         
-        # Các biến trạng thái
+        # State vars
         snapshot_state = "IDLE" 
         frames_since_incident = 0
         current_incident_label = ""
         current_sequence_id = 0
         last_alert_time = 0
-        alert_cooldown = 30 # Giây
+        alert_cooldown = 30 # seconds
         
         frame_count = 0
-        last_valid_frame = None # Lưu frame cuối cùng hợp lệ để xử lý khi video hết
+        last_valid_frame = None 
         last_boxes = []
+        
+        # Track last incident for final report
+        final_snapshots = []
+        final_incident_id = None
 
         print(f"Video Info: FPS={video_fps}, Buffer Size={BUFFER_SIZE}, After Frames={AFTER_FRAMES_REQUIRED}")
 
-        while self.running:
+        # 3. MAIN LOOP
+        self.running = True
+        while self.running and cap.isOpened():
+            # --- PAUSE LOGIC ---
+            if self.paused:
+                time.sleep(0.1) # Sleep to save CPU
+                continue
+                
             ret, frame = cap.read()
             
-            # --- XỬ LÝ KHI VIDEO KẾT THÚC (QUAN TRỌNG CHO CASE 1) ---
+            # --- END OF VIDEO CHECK ---
             if not ret:
                 print("End of video stream.")
-                # Nếu đang đợi chụp ảnh After mà video hết -> Chụp ngay frame cuối cùng
                 if snapshot_state == "WAITING_FOR_AFTER" and last_valid_frame is not None:
                     print("Video ended early. Forcing capture of AFTER image.")
-                    self.save_image(last_valid_frame, current_sequence_id, current_incident_label, "3_after")
+                    path_after = self.save_image(last_valid_frame, current_sequence_id, current_incident_label, "3_after")
+                    if 'current_snapshot_paths' in locals():
+                        current_snapshot_paths[2] = path_after
+                        self.snapshot_saved.emit(*current_snapshot_paths)
                 break
 
             last_valid_frame = frame.copy()
             frame_buffer.append(frame.copy())
             frame_count += 1
             annotated_frame = frame.copy()
+            
+            # Emit Progress
+            if total_frames > 0:
+                progress = int((frame_count / total_frames) * 100)
+                self.progress_signal.emit(progress)
 
-            # --- A. PHẦN NHẬN DIỆN ---
+            # --- A. DETECTION ---
             if frame_count % SKIP_FRAMES == 0:
                 results = self.model.track(frame, persist=True, verbose=False, conf=self.conf_threshold)
                 
-                last_boxes = [] # Reset boxes cũ
+                last_boxes = [] 
                 
                 current_time = time.time()
                 is_incident_now = False
@@ -133,22 +160,23 @@ class DetectionThread(QThread):
                     current_incident_label = detected_label
                     last_alert_time = current_time
                     current_sequence_id = int(time.time())
+                    final_incident_id = current_sequence_id # New: Track ID
                     
                     print(f"!!! Incident Detected: {detected_label}")
 
-                    # 1. Save BEFORE (Lấy frame cũ nhất trong buffer)
-                    # Nếu buffer chưa đầy (đầu video), lấy frame đầu tiên có được
+                    # 1. Save BEFORE
                     frame_before = frame_buffer[0] if frame_buffer else frame
-                    self.save_image(frame_before, current_sequence_id, detected_label, "1_before")
+                    path_before = self.save_image(frame_before, current_sequence_id, detected_label, "1_before")
                     
                     # 2. Save DURING
-                    self.save_image(frame, current_sequence_id, detected_label, "2_during")
+                    path_during = self.save_image(frame, current_sequence_id, detected_label, "2_during")
                     
-                    # Gửi signal UI
-                    path_during = os.path.join(DATA_DIR, f"{current_sequence_id}_{detected_label}_2_during.jpg")
+                    current_snapshot_paths = [path_before, path_during, None]
+                    
+                    # Emit signal
                     self.detection_signal.emit(detected_label, path_during)
 
-            # --- B. VẼ LẠI BOX ---
+            # --- B. DRAW BOXES ---
             for (x1, y1, x2, y2, label, conf) in last_boxes:
                 color = (0, 0, 255) if label.lower() in target_labels else (0, 255, 0)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -157,11 +185,16 @@ class DetectionThread(QThread):
             # --- C. STATE MACHINE UPDATE ---
             if snapshot_state == "WAITING_FOR_AFTER":
                 frames_since_incident += 1
-                # Kiểm tra đủ thời gian chưa
                 if frames_since_incident >= AFTER_FRAMES_REQUIRED:
                     # 3. Save AFTER
-                    self.save_image(frame, current_sequence_id, current_incident_label, "3_after")
+                    path_after = self.save_image(frame, current_sequence_id, current_incident_label, "3_after")
                     print("Sequence capture complete.")
+                    
+                    if 'current_snapshot_paths' in locals():
+                        current_snapshot_paths[2] = path_after
+                        self.snapshot_saved.emit(*current_snapshot_paths)
+                        final_snapshots = current_snapshot_paths # New: Store for final emit
+
                     snapshot_state = "IDLE"
 
             # --- D. OUTPUT ---
@@ -170,16 +203,29 @@ class DetectionThread(QThread):
                 self.out.write(annotated_frame)
 
         # Cleanup
+        print("Stopping detection thread...")
         cap.release()
         if self.out:
             self.out.release()
+        
+        # NEW: Emit completion signal
+        self.process_finished_signal.emit({
+            'success': True,
+            'output_path': self.save_path,
+            'snapshots': final_snapshots,
+            'incident_id': str(final_incident_id) if final_incident_id else str(int(time.time()))
+        })
             
-    def save_image(self, frame, seq_id, label, suffix):
-        """Hàm hỗ trợ lưu ảnh để code gọn hơn"""
-        filename = f"{seq_id}_{label}_{suffix}.jpg"
-        path = os.path.join(DATA_DIR, filename)
-        cv2.imwrite(path, frame)
-
     def stop(self):
+        """Signal thread to stop and wait"""
         self.running = False
         self.wait()
+
+    def save_image(self, frame, seq_id, label, suffix):
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
+        
+        filename = f"{seq_id}_{label}_{suffix}.jpg"
+        filepath = os.path.join(DATA_DIR, filename)
+        cv2.imwrite(filepath, frame)
+        return filepath

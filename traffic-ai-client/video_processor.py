@@ -3,7 +3,13 @@ import argparse
 import sys
 import os
 import json
+import requests
+import time
+from collections import deque
 from ultralytics import YOLO
+
+# Constants
+JAVA_BACKEND_URL = "http://localhost:8080/api/incidents/report"
 
 def process_video(input_path, output_path, model_path='model/small/best.pt'):
     try:
@@ -24,13 +30,14 @@ def process_video(input_path, output_path, model_path='model/small/best.pt'):
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # Use VP80 codec (.webm) for best browser compatibility
+    # Use standard MP4 codec (avc1/mp4v)
+    # Java VideoController now supports .mp4
     try:
-        fourcc = cv2.VideoWriter_fourcc(*'VP80')
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     except:
-        print("Warning: VP80 codec not found, falling back to mp4v")
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        print("Warning: mp4v codec failed, trying avc1")
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     print(f"Processing {input_path} -> {output_path}")
@@ -39,10 +46,28 @@ def process_video(input_path, output_path, model_path='model/small/best.pt'):
     output_dir = os.path.dirname(output_path)
     base_name = os.path.splitext(os.path.basename(output_path))[0]
     metadata_path = os.path.join(output_dir, f"{base_name}.json")
-    snapshot_path = os.path.join(output_dir, f"{base_name}_snapshot.jpg")
+    
+    # Snapshot Paths
+    snapshot_paths = []
     
     incidents = []
-    snapshot_saved = False
+    
+    # Snapshot Logic Init
+    FPS = fps if fps > 0 else 30
+    
+    BEFORE_SECONDS = 3.0 # Capture 3 seconds before (User Request)
+    AFTER_SECONDS = 3.5 
+
+    BUFFER_SIZE = int(FPS * BEFORE_SECONDS)
+    AFTER_FRAMES_COUNT = int(FPS * AFTER_SECONDS) # Capture 3.5 seconds after
+    
+    frame_buffer = deque(maxlen=BUFFER_SIZE)
+    snapshot_state = 'SEARCHING' # SEARCHING -> CAPTURING_AFTER -> DONE
+    frames_since_incident = 0
+    
+    current_best_conf = 0
+    current_best_label = "accident"
+    last_valid_frame = None
     
     # Assume 'Accident' is a specific class, or we treat certain classes as relevant.
     # For this demo, let's assume class 'accident' is detected, or we use a confidence threshold.
@@ -54,9 +79,20 @@ def process_video(input_path, output_path, model_path='model/small/best.pt'):
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret:
-            break
         
+        # --- END OF VIDEO CHECK ---
+        if not ret:
+            print("End of video stream.")
+            # Fallback: If waiting for 'After' shot, use last valid frame
+            if snapshot_state == 'CAPTURING_AFTER' and last_valid_frame is not None:
+                print("Video ended early. Forcing capture of AFTER snapshot.")
+                path_after = os.path.join(output_dir, f"{base_name}_after.jpg")
+                cv2.imwrite(path_after, last_valid_frame)
+                snapshot_paths.append(path_after)
+                print(f"Saved After (Fallback): {path_after}")
+            break
+            
+        last_valid_frame = frame.copy()
         frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
         # Inference
@@ -71,46 +107,63 @@ def process_video(input_path, output_path, model_path='model/small/best.pt'):
             print(f"Processed {frame_idx} frames...")
             sys.stdout.flush()
 
+        # Add to buffer
+        frame_buffer.append(frame.copy())
+
         # Log detection logic
+        detection_found = False
+        
         for result in results:
             for box in result.boxes:
                 conf = float(box.conf[0])
                 cls = int(box.cls[0])
                 label = model.names[cls]
                 
-                # Logic: If 'accident' or 'crash' detected (or just high confidence specific event)
-                # Since we don't know exact classes of user's 'best.pt', 
-                # we will assume 'Accident' might be a class, OR we treat any high-conf detection as relevant for now?
-                # BETTER: Just capture the HIGHEST confidence detection if we haven't saved a snapshot yet
-                # ideally we want to capture "Accident". 
-                # Let's assume the user's model detects "Accident".
-                
-                # Check for "accident" in label (case insensitive)
-                # Relaxed Logic: Record ALL high-confidence detections for demo/debug purposes
-                # This ensures the "Detected Events" table is never empty if *something* is seen.
                 if conf > 0.5:
-                    # Record incident
-                    timestamp = frame_idx / fps # seconds
+                    detection_found = True
+                    timestamp = frame_idx / fps
                     
-                    # Optional: Filter to avoid flooding (only save 1 event per second?)
-                    # For now, just save all.
                     incidents.append({
                         "time": timestamp,
                         "label": label,
                         "confidence": conf
                     })
                     
-                    # Save snapshot if it's an accident (specific check for snapshot only)
-                    if not snapshot_saved and ("accident" in label.lower() or "crash" in label.lower() or conf > 0.8):
-                        cv2.imwrite(snapshot_path, frame)
-                        snapshot_saved = True
-                        print(f"Snapshot saved: {snapshot_path}")
-                    
-                    # Save snapshot (only the first/best one)
-                    if not snapshot_saved:
-                        cv2.imwrite(snapshot_path, frame)
-                        snapshot_saved = True
-                        print(f"Snapshot saved: {snapshot_path}")
+                    # Snapshot State Machine
+                    if snapshot_state == 'SEARCHING':
+                         # If high confidence accident
+                         if ("accident" in label.lower() or conf > 0.75):
+                             print(f"[{frame_idx}] Accident Detected ({label} {conf:.2f}), capturing snapshots...")
+                             
+                             current_best_label = label
+                             
+                             # 1. Save BEFORE (oldest in buffer)
+                             before_frame = frame_buffer[0] if frame_buffer else frame
+                             path_before = os.path.join(output_dir, f"{base_name}_before.jpg")
+                             cv2.imwrite(path_before, before_frame)
+                             snapshot_paths.append(path_before)
+                             print(f"Saved Before: {path_before}")
+                             
+                             # 2. Save DURING (current)
+                             path_during = os.path.join(output_dir, f"{base_name}_during.jpg")
+                             cv2.imwrite(path_during, frame)
+                             snapshot_paths.append(path_during)
+                             print(f"Saved During: {path_during}")
+                             
+                             snapshot_state = 'CAPTURING_AFTER'
+                             frames_since_incident = 0
+
+        # Handle 'CAPTURING_AFTER' State
+        if snapshot_state == 'CAPTURING_AFTER':
+            frames_since_incident += 1
+            if frames_since_incident >= AFTER_FRAMES_COUNT:
+                # 3. Save AFTER
+                path_after = os.path.join(output_dir, f"{base_name}_after.jpg")
+                cv2.imwrite(path_after, frame)
+                snapshot_paths.append(path_after)
+                print(f"Saved After: {path_after}")
+                
+                snapshot_state = 'DONE' # Limit to 1 incident sequence per batch logic for now
 
     cap.release()
     out.release()
@@ -119,14 +172,54 @@ def process_video(input_path, output_path, model_path='model/small/best.pt'):
     metadata = {
         "processed_video": output_path,
         "incidents": incidents,
-        "snapshot_path": snapshot_path if snapshot_saved else None,
-        "has_accident": snapshot_saved
+        "snapshot_path": snapshot_paths[1] if len(snapshot_paths) > 1 else None, # Use 'during' as main
+        "snapshot_paths": snapshot_paths,
+        "has_accident": len(snapshot_paths) >= 3
     }
     
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=4)
         
     print(f"Metadata saved: {metadata_path}")
+    
+    # --- REPORT TO JAVA BACKEND ---
+            # Ensure we have 3 snapshots (pad if necessary)
+            while len(snapshot_paths) < 3:
+                 # Fallback: duplicate last one or use placeholder
+                 if snapshot_paths: snapshot_paths.append(snapshot_paths[-1])
+                 else: break # Should not happen if snapshot_saved is true
+            
+            with open(snapshot_paths[0], 'rb') as f_before:
+                with open(snapshot_paths[1], 'rb') as f_during:
+                    with open(snapshot_paths[2], 'rb') as f_after:
+                        with open(output_path, 'rb') as f_vid:
+                            
+                            files = {
+                                'imageBefore': ('before.jpg', f_before, 'image/jpeg'),
+                                'imageDuring': ('during.jpg', f_during, 'image/jpeg'),
+                                'imageAfter':  ('after.jpg', f_after, 'image/jpeg'),
+                                'video':       ('video.mp4', f_vid, 'video/mp4')
+                            }
+                    
+                    # Determine label
+                    top_label = incidents[0]['label'] if incidents else "vehicle accident"
+                    
+                    data = {
+                        'type': top_label,
+                        'description': "Auto-detected by Batch Analysis", 
+                    }
+                    
+                    # POST
+                    res = requests.post(JAVA_BACKEND_URL, files=files, data=data)
+                    
+                    if res.status_code == 200:
+                        print(f"✅ Reported to Backend! ID: {res.json().get('id')}")
+                    else:
+                        print(f"❌ Report Failed: {res.status_code} {res.text}")
+                        
+        except Exception as e:
+            print(f"Error reporting to backend: {e}")
+
     print("Processing Complete.")
     sys.stdout.flush()
 

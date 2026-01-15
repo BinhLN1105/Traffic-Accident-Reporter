@@ -112,6 +112,14 @@
                                oninput="document.getElementById('conf-value').innerText = this.value">
                     </div>
                     
+                    <!-- Auto Report Option -->
+                    <div id="auto-report-container" style="margin-top: 15px; text-align: center; width: 100%;">
+                        <label style="color: var(--text-secondary); font-size: 0.9rem; cursor: pointer;">
+                            <input type="checkbox" id="auto-report" style="cursor: pointer; margin-right: 8px; transform: scale(1.2);">
+                            <span style="vertical-align: middle;">📝 Tự động tạo báo cáo AI sau khi phân tích</span>
+                        </label>
+                    </div>
+                    
                     <!-- Single Action Button - changes based on mode -->
                     <div id="analysis-options" class="hidden" style="margin-top: 20px; display: flex; gap: 15px; justify-content: center; width: 100%;">
                          <button id="analyze-btn" type="button" class="action-btn batch-btn" onclick="startCurrentModeAnalysis()">

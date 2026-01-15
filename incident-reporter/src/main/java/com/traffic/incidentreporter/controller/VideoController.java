@@ -46,20 +46,21 @@ public class VideoController {
             @RequestParam(value = "realtime", defaultValue = "false") boolean isRealtime,
             @RequestParam(value = "modelType", defaultValue = "medium") String modelType,
             @RequestParam(value = "customLabels", defaultValue = "accident, vehicle accident") String customLabels,
-            @RequestParam(value = "confidenceThreshold", defaultValue = "0.70") Double confidenceThreshold) {
+            @RequestParam(value = "confidenceThreshold", defaultValue = "0.70") Double confidenceThreshold,
+            @RequestParam(value = "autoReport", defaultValue = "true") Boolean autoReport) {
         try {
-            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ", Model=" + modelType + ", Labels=" + customLabels + ", Conf=" + confidenceThreshold + ")");
+            System.out.println("Received: " + file.getOriginalFilename() + " (Realtime=" + isRealtime + ", Model=" + modelType + ", Labels=" + customLabels + ", Conf=" + confidenceThreshold + ", AutoReport=" + autoReport + ")");
             
             String logFileName = UUID.randomUUID().toString() + "_" + file.getOriginalFilename();
             Path inputLocation = this.fileStorageLocation.resolve(logFileName);
-            // Change output extension to .webm for better browser compatibility
+            // Use WebM extension (VP8 codec from Python for browser compatibility)
             Path outputLocation = this.fileStorageLocation.resolve("processed_" + logFileName + ".webm");
 
             Files.copy(file.getInputStream(), inputLocation, StandardCopyOption.REPLACE_EXISTING);
 
             // Async Submit
             String pythonScript = "d:/ProjectHTGTTM_CarTrafficReport/traffic-ai-client/video_processor.py";
-            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime, modelType, customLabels, confidenceThreshold);
+            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime, modelType, customLabels, confidenceThreshold, autoReport);
 
             Map<String, String> response = new HashMap<>();
             response.put("taskId", taskId);
@@ -103,6 +104,12 @@ public class VideoController {
         result.put("aiReport", status.aiReport);
         result.put("incidents", status.incidents);
         
+        // Also provide original input video URL for browser playback (H.264 compatible)
+        if (status.inputFilePath != null) {
+            Path inputPath = Paths.get(status.inputFilePath);
+            result.put("inputVideoUrl", "/api/videos/download/" + inputPath.getFileName().toString());
+        }
+        
         List<String> snapshotUrls = new ArrayList<>();
         if (status.snapshotPaths != null) {
              for(String s : status.snapshotPaths) {
@@ -113,6 +120,21 @@ public class VideoController {
 
         return ResponseEntity.ok(result);
     }
+
+    // NEW: Trigger AI analysis on-demand (for manual report generation)
+    @PostMapping("/generate-report/{taskId}")
+    public ResponseEntity<Map<String, Object>> generateReport(@PathVariable String taskId) {
+        try {
+            String aiReport = processingManager.generateReportOnDemand(taskId);
+            Map<String, Object> result = new HashMap<>();
+            result.put("aiReport", aiReport);
+            result.put("success", true);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage(), "success", false));
+        }
+    }
+
 
     @GetMapping("/download/{fileName:.+}")
     public ResponseEntity<Resource> downloadFile(@PathVariable String fileName) {
@@ -126,9 +148,27 @@ public class VideoController {
                 String encodedFileName = java.net.URLEncoder.encode(resource.getFilename(), java.nio.charset.StandardCharsets.UTF_8.toString())
                         .replaceAll("\\+", "%20");
 
+                String contentType = "application/octet-stream";
+                String name = resource.getFilename().toLowerCase();
+                if (name.endsWith(".mp4")) {
+                    contentType = "video/mp4";
+                } else if (name.endsWith(".webm")) {
+                    contentType = "video/webm";
+                } else if (name.endsWith(".avi")) {
+                    contentType = "video/x-msvideo";
+                } else if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+                    contentType = "image/jpeg";
+                } else if (name.endsWith(".png")) {
+                    contentType = "image/png";
+                }
+
+                // Use inline for video/images to allow browser playback, attachment for others
+                String disposition = contentType.startsWith("video/") || contentType.startsWith("image/") 
+                        ? "inline" : "attachment";
+
                 return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType("video/webm"))
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + encodedFileName + "\"; filename*=UTF-8''" + encodedFileName)
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION, disposition + "; filename=\"" + encodedFileName + "\"; filename*=UTF-8''" + encodedFileName)
                         .body(resource);
             } else {
                 return ResponseEntity.notFound().build();

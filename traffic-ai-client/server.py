@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import shutil
+import requests # Added for API calls
 
 from ultralytics import YOLO
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
@@ -58,7 +59,7 @@ pcs = set()
 # --- BATCH WORKER ---
 from collections import deque
 
-def process_video_task(input_path, output_path, job_id, is_realtime, model_type="medium", custom_labels="accident, vehicle accident", confidence_threshold=0.70):
+def process_video_task(input_path, output_path, job_id, is_realtime, model_type="medium", custom_labels="accident, vehicle accident", confidence_threshold=0.70, auto_report=True):
     try:
         jobs[job_id]['status'] = 'PROCESSING'
         
@@ -74,21 +75,34 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps == 0 or fps is None:
+            fps = 30  # Fallback only if invalid
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        fourcc = cv2.VideoWriter_fourcc(*'vp80') 
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        print(f"[{job_id}] Video Info: FPS={fps}, Frames={total_frames}, Size={width}x{height}")
+        
+        # Use WebM format with VP8 codec for browser compatibility
+        if output_path.endswith('.avi'):
+            output_path = output_path.replace('.avi', '.webm')
+        elif output_path.endswith('.mp4'):
+            output_path = output_path.replace('.mp4', '.webm')
+        
+        # Normalize FPS to 30 for WebM (some codecs don't handle non-standard FPS well)
+        # Compensate for 2x playback issue by halving the FPS
+        output_fps = fps / 2.0 if fps > 0 else 15.0
+        print(f"[{job_id}] Writing video at {output_fps} FPS (compensated)")
+        fourcc = cv2.VideoWriter_fourcc(*'VP80')
+        out = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
 
         incidents = []
         frame_count = 0
         
-        # Snapshot Configuration
-        FPS = 30
+        # Snapshot Configuration - Use ACTUAL FPS
         BEFORE_SECONDS = 3
-        AFTER_SECONDS = 3
-        BUFFER_SIZE = FPS * BEFORE_SECONDS
-        AFTER_FRAMES = FPS * AFTER_SECONDS
+        AFTER_SECONDS = 3.5
+        BUFFER_SIZE = int(fps * BEFORE_SECONDS)
+        AFTER_FRAMES = int(fps * AFTER_SECONDS)
 
         frame_buffer = deque(maxlen=BUFFER_SIZE) 
         snapshot_state = 'SEARCHING'
@@ -104,7 +118,21 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         
         while cap.isOpened():
             ret, frame = cap.read()
-            if not ret: break
+            ret, frame = cap.read()
+            
+            # --- END OF VIDEO CHECK ---
+            if not ret:
+                 print(f"[{job_id}] End of video stream.")
+                 # Fallback: Capture AFTER if pending
+                 if snapshot_state == 'CAPTURING_AFTER':
+                     print(f"[{job_id}] Video ended early. Forcing capture of AFTER snapshot.")
+                     after_path = os.path.join(DATA_DIR, f"{job_id}_after.jpg")
+                     # Use last valid frame if available, else current (which is None, so careful)
+                     # Since ret is False, frame is None. Use frame_buffer[-1] or last processed
+                     if frame_buffer:
+                         cv2.imwrite(after_path, frame_buffer[-1])
+                         snapshot_paths.append(after_path)
+                 break
             
             # Add to buffer (save raw frame for snapshots)
             frame_buffer.append(frame.copy())
@@ -139,9 +167,25 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                                 consecutive_accident_frames = 0
                             
                             # Use state check instead of missing flag
-                            if snapshot_state == 'SEARCHING' and consecutive_accident_frames >= 5:
-                                current_incident_label = label
-                                current_conf = conf
+                            if snapshot_state == 'SEARCHING':
+                                # If high confidence accident
+                                if ("accident" in label.lower() or conf > 0.70):
+                                    current_incident_label = label
+                                    print(f"[{job_id}] Accident Detected ({label} {conf:.2f}), capturing snapshots...")
+                                    
+                                    # 1. Save BEFORE (oldest in buffer)
+                                    before_frame = frame_buffer[0] if frame_buffer else frame
+                                    before_path = os.path.join(DATA_DIR, f"{job_id}_before.jpg")
+                                    cv2.imwrite(before_path, before_frame)
+                                    snapshot_paths.append(before_path)
+                                    
+                                    # 2. Save DURING (current)
+                                    during_path = os.path.join(DATA_DIR, f"{job_id}_during.jpg")
+                                    cv2.imwrite(during_path, frame)
+                                    snapshot_paths.append(during_path)
+                                    
+                                    snapshot_state = 'CAPTURING_AFTER'
+                                    frames_since_incident = 0
 
             else:
                 annotated_frame = frame
@@ -149,32 +193,18 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
             out.write(annotated_frame)
             
             # --- SNAPSHOT STATE MACHINE ---
-            if snapshot_state == 'SEARCHING':
-                if current_incident_label:
-                    print(f"[{job_id}] EVENT DETECTED: {current_incident_label}")
-                    snapshot_state = 'CAPTURING_AFTER'
-                    frames_since_incident = 0
-                    
-                    # 1. Save BEFORE (oldest in buffer)
-                    if len(frame_buffer) > 0:
-                        before_path = os.path.join(DATA_DIR, f"{job_id}_before.jpg")
-                        cv2.imwrite(before_path, frame_buffer[0])
-                        snapshot_paths.append(before_path)
-                    
-                    # 2. Save DURING (current)
-                    during_path = os.path.join(DATA_DIR, f"{job_id}_during.jpg")
-                    cv2.imwrite(during_path, frame)
-                    snapshot_paths.append(during_path)
-                    
-            elif snapshot_state == 'CAPTURING_AFTER':
+            # --- SNAPSHOT STATE MACHINE ---
+            # SEARCHING logic is handled inside Detection Loop above
+
+            if snapshot_state == 'CAPTURING_AFTER':
                 frames_since_incident += 1
-                if frames_since_incident >= 90: # ~3 sec after
+                if frames_since_incident >= (fps * 3.5): # 3.5 sec after
                     # 3. Save AFTER
                     after_path = os.path.join(DATA_DIR, f"{job_id}_after.jpg")
                     cv2.imwrite(after_path, frame)
                     snapshot_paths.append(after_path)
                     
-                    snapshot_state = 'DONE' # Limit to 1 sequence per video for now
+                    snapshot_state = 'DONE'
                     print(f"[{job_id}] Snapshot sequence complete.")
 
             frame_count += 1
@@ -203,11 +233,63 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         jobs[job_id]['status'] = 'COMPLETED'
         jobs[job_id]['progress'] = 100
         print(f"[{job_id}] Finished. Metadata saved to {json_path}")
+        
+        # --- REPORT TO JAVA BACKEND ---
+        # --- REPORT TO JAVA BACKEND ---
+        # Ensure 3 snapshots (Pad if missing)
+        while len(snapshot_paths) < 3 and len(snapshot_paths) > 0:
+             snapshot_paths.append(snapshot_paths[-1])
+             
+        if auto_report and len(snapshot_paths) >= 3:
+             print(f"[{job_id}] Auto-report enabled. Sending to backend...")
+             report_to_backend(snapshot_paths, incidents[0]['label'] if incidents else "accident", output_path)
+        elif not auto_report:
+             print(f"[{job_id}] Auto-report disabled. Skipping backend reporting.")
 
     except Exception as e:
         print(f"[{job_id}] Error: {str(e)}")
         jobs[job_id]['status'] = 'FAILED'
         jobs[job_id]['message'] = str(e)
+
+
+def report_to_backend(snapshot_paths, label, video_path=None):
+    """
+    Send the 3 snapshots + metadata + optional video to the Java Backend
+    Endpoint: POST http://localhost:8080/api/incidents/report
+    Params: imageBefore, imageDuring, imageAfter, type, description, video
+    """
+    API_URL = "http://localhost:8080/api/incidents/report"
+    
+    try:
+        print(f"Uploading incident '{label}' to Backend...")
+        
+        files = {
+            'imageBefore': open(snapshot_paths[0], 'rb'),
+            'imageDuring': open(snapshot_paths[1], 'rb'),
+            'imageAfter': open(snapshot_paths[2], 'rb'),
+        }
+        
+        if video_path and os.path.exists(video_path):
+            files['video'] = open(video_path, 'rb')
+        
+        data = {
+            'type': label,
+            'description': f"Auto-detected {label} by Python Analysis Server"
+        }
+        
+        response = requests.post(API_URL, files=files, data=data)
+        
+        # Close files
+        for f in files.values():
+            f.close()
+            
+        if response.status_code == 200:
+            print("✅ Successfully reported to Backend. ID:", response.json().get('id'))
+        else:
+            print(f"❌ Backend Report Failed: {response.status_code} - {response.text}")
+            
+    except Exception as e:
+        print(f"❌ Error reporting to backend: {str(e)}")
 
 
 # --- GLOBAL ASYNC LOOP SETUP (WEBRTC) ---
@@ -264,6 +346,13 @@ def process_video():
     custom_labels = data.get('customLabels', 'accident, vehicle accident')
     confidence_threshold = float(data.get('confidenceThreshold', 0.70))
     
+    # Handle autoReport as either boolean or string
+    auto_report_value = data.get('autoReport', True)
+    if isinstance(auto_report_value, bool):
+        auto_report = auto_report_value
+    else:
+        auto_report = str(auto_report_value).lower() == 'true'
+    
     if not input_path:
         return jsonify({"error": "Missing inputPath"}), 400
 
@@ -296,7 +385,7 @@ def process_video():
         }
         
         # Start Thread
-        worker = threading.Thread(target=process_video_task, args=(input_path, output_path, job_id, False, model_type, custom_labels, confidence_threshold))
+        worker = threading.Thread(target=process_video_task, args=(input_path, output_path, job_id, False, model_type, custom_labels, confidence_threshold, auto_report))
         worker.daemon = True
         worker.start()
 
