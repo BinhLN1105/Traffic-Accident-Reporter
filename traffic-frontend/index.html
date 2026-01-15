@@ -83,13 +83,10 @@
                     <!-- Model Selection -->
                     <div id="model-selection-container" class="hidden" style="margin-top: 15px; text-align: center; width: 100%;">
                         <label for="model-select" style="margin-right: 10px; color: var(--text-secondary);">AI Model:</label>
-                        <!-- Model Selector -->
-                    <div class="input-group" style="display: inline-block;">
+                        <div class="input-group" style="display: inline-block;">
                         <select id="model-select">
                             <option value="small">🚀 Standard (Small - Fast)</option>
                             <option value="medium" selected>⚖️ Premium (Medium - Balanced)</option>
-                            <option value="mediumv2">🔥 Premium V2 (New)</option>
-                            <option value="mediumv3">🔥 Premium V3 (New)</option>
                         </select>
                     </div>
                     </div>
@@ -138,6 +135,24 @@
                         <video id="webrtc-video" autoplay playsinline controls muted style="width: 100%; max-width: 800px; display: block; background: #000;"></video>
                     </div>
                     <p style="margin-top: 10px; font-size: 0.9em; opacity: 0.7;">Streaming from Python Server (Camera 0)</p>
+                    
+                    <!-- NEW: Live Snapshots Gallery -->
+                    <div id="live-snapshot-gallery" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:15px; justify-content:center;">
+                        <!-- Images injected by JS -->
+                    </div>
+
+                    <!-- NEW: Live Report Section -->
+                    <div id="live-report-section" class="hidden" style="margin-top: 20px; border-top: 1px solid #444; padding-top: 20px;">
+                        <button id="btn-create-live-report" class="btn-primary" onclick="generateLiveReport()" style="background: var(--accent-blue); padding: 10px 20px;">
+                            📝 Create Live Report
+                        </button>
+                    </div>
+
+                    <!-- Live Report Container (Hidden by default) -->
+                    <div id="live-report-container" class="hidden" style="margin-top: 15px; padding: 15px; background: var(--card-bg); border-radius: 8px; text-align: left;">
+                         <h4 style="color: var(--accent-blue);">📋 Live Session Report</h4>
+                         <div id="live-report-content" style="white-space: pre-wrap; margin-top: 10px; color: var(--text-primary);"></div>
+                    </div>
                 </div>
 
                 <!-- 1. Input Preview (Hidden until file selected) -->

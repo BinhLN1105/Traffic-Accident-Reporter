@@ -80,7 +80,13 @@ public class VideoProcessingManager {
                 status.inputFilePath = inputPath; // Store input path for browser playback
                 tasks.put(jobId, status);
                 
-                executor.submit(() -> monitorTask(jobId, outputPath, autoReport));
+                // Only start monitoring thread for Batch mode
+                // Realtime mode uses WebRTC connection, no need to poll Python server
+                if (!isRealtime) {
+                    executor.submit(() -> monitorTask(jobId, outputPath, autoReport));
+                } else {
+                    System.out.println("Realtime job " + jobId + " - skipping monitoring thread (managed by WebRTC)");
+                }
                 
                 return jobId;
             } else {
@@ -114,12 +120,39 @@ public class VideoProcessingManager {
             List<Path> pathList = new ArrayList<>();
             // Use middle snapshot (best quality)
             String middleSnapshot = status.snapshotPaths.get(status.snapshotPaths.size() / 2);
-            // Resolve full path using relative path (project root/data/)
-            Path dataDir = Paths.get(System.getProperty("user.dir")).getParent().resolve("data");
-            Path fullPath = dataDir.resolve(middleSnapshot);
-            if (!fullPath.toFile().exists()) {
-                fullPath = Paths.get(middleSnapshot); // Try as-is (already absolute path)
+            
+            Path fullPath;
+            
+            // Check if snapshot is a Python server URL (Realtime mode)
+            if (middleSnapshot.startsWith("/data/")) {
+                // Download from Python server
+                String pythonUrl = PYTHON_SERVER_URL + middleSnapshot;
+                System.out.println("Downloading snapshot from Python server: " + pythonUrl);
+                
+                try {
+                    // Download image to temp file
+                    byte[] imageBytes = restTemplate.getForObject(pythonUrl, byte[].class);
+                    if (imageBytes == null || imageBytes.length == 0) {
+                        throw new Exception("Failed to download image from Python server");
+                    }
+                    
+                    // Save to temp file
+                    Path tempFile = java.nio.file.Files.createTempFile("snapshot_", ".jpg");
+                    java.nio.file.Files.write(tempFile, imageBytes);
+                    fullPath = tempFile;
+                    System.out.println("Saved temp snapshot: " + fullPath);
+                } catch (Exception e) {
+                    throw new Exception("Failed to download snapshot from Python: " + e.getMessage());
+                }
+            } else {
+                // Local file path (Batch mode)
+                Path dataDir = Paths.get(System.getProperty("user.dir")).getParent().resolve("data");
+                fullPath = dataDir.resolve(middleSnapshot);
+                if (!fullPath.toFile().exists()) {
+                    fullPath = Paths.get(middleSnapshot); // Try as-is (already absolute path)
+                }
             }
+            
             pathList.add(fullPath);
             
             String aiReport = geminiService.analyzeImage(pathList);
@@ -128,6 +161,16 @@ public class VideoProcessingManager {
         }
         
         throw new Exception("No snapshots available for analysis");
+    }
+
+    // NEW: Update task snapshots from frontend (for Realtime mode)
+    public void updateTaskSnapshots(String taskId, List<String> snapshotUrls) {
+        TaskStatus status = tasks.get(taskId);
+        if (status != null) {
+            // Store snapshot URLs (these are Python server URLs like /data/xxx.jpg)
+            status.snapshotPaths = new ArrayList<>(snapshotUrls);
+            System.out.println("Updated task " + taskId + " with " + snapshotUrls.size() + " snapshot URLs");
+        }
     }
 
 
@@ -287,6 +330,10 @@ public class VideoProcessingManager {
                     } else if ("FAILED".equals(remoteStatus)) {
                         localStatus.status = Status.FAILED;
                         localStatus.message = (String) body.get("message");
+                        break;
+                    } else if ("STOPPED".equals(remoteStatus) || "READY".equals(remoteStatus)) {
+                        // Realtime mode: stream was stopped or is in ready state
+                        System.out.println("Realtime job " + taskId + " stopped/ready, ending monitoring.");
                         break;
                     } else {
                         localStatus.status = Status.PROCESSING;

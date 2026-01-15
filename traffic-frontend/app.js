@@ -105,9 +105,13 @@ function restoreState() {
 
 
 // --- WEBRTC LOGIC ---
+let currentRealtimeTaskId = null; // NEW: Store Java taskId for AI report generation
 
-async function startWebRTC(jobId, inputPath) {
-    console.log("Starting WebRTC for Job:", jobId, "Path:", inputPath);
+async function startWebRTC(javaTaskId, inputPath) {
+    console.log("Starting WebRTC for Task:", javaTaskId, "Path:", inputPath);
+    
+    // Store Java taskId for later use (AI report generation)
+    currentRealtimeTaskId = javaTaskId;
     
     // 1. Notify Python to Prepare Job (since we uploaded to Java)
     try {
@@ -116,7 +120,8 @@ async function startWebRTC(jobId, inputPath) {
             body: JSON.stringify({
                 // Python expects 'inputPath' to map jobId
                 inputPath: inputPath,
-                realtime: true 
+                realtime: true,
+                autoReport: document.getElementById('auto-report').checked 
             }),
             headers: { 'Content-Type': 'application/json' }
         });
@@ -176,13 +181,91 @@ async function startWebRTC(jobId, inputPath) {
         await pc.setRemoteDescription(answer);
         console.log("WebRTC Connected!");
         
+        // Start Polling for Realtime Updates (Snapshots)
+        currentRealtimeJobId = pythonJobId;
+        pollRealtimeStatus(pythonJobId);
+        
     } catch (e) {
         console.error("WebRTC Error:", e);
         alert("Failed to connect to AI Stream");
     }
 }
 
+let currentRealtimeJobId = null;
+let realtimePollTimeout = null;
+
+async function pollRealtimeStatus(jobId) {
+    if (jobId !== currentRealtimeJobId) return; // Stop if changed
+    
+    try {
+        const res = await fetch(`${PYTHON_API_BASE}/status/${jobId}`);
+        if (res.ok) {
+            const status = await res.json();
+            
+            // Update UI with snapshots if available
+            if (status.snapshot_urls && status.snapshot_urls.length > 0) {
+                 updateRealtimeGallery(status.snapshot_urls);
+            }
+            
+            // Check if job ended or failed
+            if (status.status === 'FAILED') {
+                console.error("Stream Job Failed:", status.message);
+            }
+        }
+    } catch (e) {
+        console.error("Poll Error:", e);
+    }
+    
+    // Poll every 2 seconds
+    realtimePollTimeout = setTimeout(() => pollRealtimeStatus(jobId), 2000);
+}
+
+function updateRealtimeGallery(urls) {
+    // Target the specific Live Gallery, fallback to main if not found
+    let gallery = document.getElementById('live-snapshot-gallery');
+    if (!gallery) gallery = document.getElementById('snapshot-gallery');
+    
+    // resultDiv removal is not needed for Live mode as we have dedicated area
+    // const resultDiv = document.getElementById('video-result');
+    // resultDiv.classList.remove('hidden'); 
+    
+    // Optimization: Only append NEW images to avoid flicker/refresh feel
+    const currentCount = gallery.childElementCount;
+    if (urls.length <= currentCount) return;
+    
+    // Group by 3 for label logic logic: Before, During, After, Before...
+    const labels = ["Before", "During", "After"];
+    
+    // Start loop from currentCount to only add new ones
+    for (let i = currentCount; i < urls.length; i++) {
+        const url = urls[i];
+        const wrap = document.createElement('div');
+        wrap.style.textAlign = 'center';
+        
+        // Incident Index changes every 3 images
+        const incidentIdx = Math.floor(i / 3);
+        const typeIdx = i % 3;
+        const label = labels[typeIdx]; 
+        
+        const fullUrl = `${PYTHON_API_BASE}${url}`;
+        
+        wrap.innerHTML = `
+            <img src="${fullUrl}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">
+            <div style="font-size:0.8em; color:#aaa; margin-top:2px;">#${incidentIdx+1} ${label}</div>
+        `;
+        // Append new item to end
+        gallery.appendChild(wrap);
+    }
+    
+    // Calculate scroll: if user was at bottom, keep at bottom?
+    // For now, just scroll to bottom to show new content
+    gallery.scrollTop = gallery.scrollHeight;
+}
+
 function stopWebRTC() {
+    clearTimeout(realtimePollTimeout); // Stop Polling
+    currentRealtimeJobId = null;
+    
     if (pc) {
         pc.close();
         pc = null;
@@ -191,6 +274,98 @@ function stopWebRTC() {
     if (videoElem) {
         videoElem.srcObject = null;
     }
+    
+    // Enable/Disable buttons (with null checks for batch mode compatibility)
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+    
+    // Show the Create Report button after stopping
+    const reportSection = document.getElementById('live-report-section');
+    if(reportSection) reportSection.classList.remove('hidden');
+}
+
+async function generateLiveReport() {
+    console.log("Generating AI-powered Live Report...");
+    
+    const reportContainer = document.getElementById('live-report-container');
+    const reportContent = document.getElementById('live-report-content');
+    const gallery = document.getElementById('live-snapshot-gallery');
+    const images = gallery.getElementsByTagName('img');
+    
+    // Check if we have snapshots and a valid task ID
+    if (images.length === 0) {
+        reportContent.textContent = "❌ No snapshots captured yet. Please wait for incident detection.";
+        reportContainer.classList.remove('hidden');
+        return;
+    }
+    
+    if (!currentRealtimeTaskId) {
+        reportContent.textContent = "❌ No active Realtime session. Please start a stream first.";
+        reportContainer.classList.remove('hidden');
+        return;
+    }
+    
+    // Show loading state
+    reportContent.textContent = "⏳ Syncing snapshots and generating AI report...";
+    reportContainer.classList.remove('hidden');
+    
+    try {
+        // 1. Collect snapshot URLs from gallery images
+        const snapshotUrls = [];
+        for (let img of images) {
+            // img.src is full URL like http://localhost:5000/data/xxx.jpg
+            // We need just the path part: /data/xxx.jpg
+            const url = new URL(img.src);
+            snapshotUrls.push(url.pathname); // e.g., /data/xxx.jpg
+        }
+        console.log("Snapshot URLs to sync:", snapshotUrls);
+        
+        // 2. Sync snapshots with Java backend
+        const syncRes = await fetch(`${API_BASE}/api/videos/update-snapshots/${currentRealtimeTaskId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ snapshotUrls: snapshotUrls })
+        });
+        
+        if (!syncRes.ok) {
+            throw new Error("Failed to sync snapshots with backend");
+        }
+        
+        // 3. Call existing generateReport API
+        reportContent.textContent = "⏳ AI is analyzing the incident...";
+        const reportRes = await fetch(`${API_BASE}/api/videos/generate-report/${currentRealtimeTaskId}`, {
+            method: 'POST'
+        });
+        
+        if (!reportRes.ok) {
+            throw new Error("Failed to generate AI report");
+        }
+        
+        const reportData = await reportRes.json();
+        
+        if (reportData.success && reportData.aiReport) {
+            // 4. Display the AI report
+            reportContent.textContent = reportData.aiReport;
+            console.log("AI Report generated successfully!");
+        } else {
+            throw new Error(reportData.error || "Unknown error");
+        }
+        
+    } catch (error) {
+        console.error("Live report generation failed:", error);
+        reportContent.textContent = `❌ Error: ${error.message}\n\nFallback: Static report generated.\n\n` + generateStaticReport(images.length);
+    }
+    
+    // Scroll to report
+    reportContainer.scrollIntoView({ behavior: 'smooth' });
+}
+
+// Helper: Generate static fallback report
+function generateStaticReport(totalSnaps) {
+    const now = new Date();
+    return `📊 REALTIME SESSION REPORT\n📅 Date: ${now.toLocaleDateString()}\n⏰ Time: ${now.toLocaleTimeString()}\n\n🔢 Summary:\n- Total Snapshots: ${totalSnaps}\n- Estimated Incidents: ${Math.round(totalSnaps / 3) || 0}\n\nℹ️ AI analysis unavailable. Please check backend connection.`;
 }
 
 // --- APP LOGIC ---
