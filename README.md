@@ -377,8 +377,9 @@ Dự án này được phân phối dưới giấy phép MIT License.
 ## 👥 Team
 
 - **Binh Luu** - Project Lead & Full-stack Developer
-- [Add team members here]
-
+- 
+-
+-
 ---
 
 ## 📞 Contact
