@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import threading
 import uuid
@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import requests # Added for API calls
+import tempfile # For Temp Dir logic
 
 from ultralytics import YOLO
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
@@ -27,10 +28,13 @@ logger = logging.getLogger("server")
 MODELS = {}
 MODEL_PATHS = {
     "small": "model/small/best.pt",
-    "medium": "model/medium/best.pt",
-    "mediumv2": "model/medium/mediumv2.pt",
-    "mediumv3": "model/medium/mediumv3.pt"
+    "medium": "model/medium/mediumv1.pt"
 }
+
+# Define Global Temp Data Root for Stream
+STREAM_DATA_ROOT = os.path.join(tempfile.gettempdir(), 'traffic_ai_data')
+os.makedirs(STREAM_DATA_ROOT, exist_ok=True)
+print(f"Stream Data Root: {STREAM_DATA_ROOT}")
 
 def get_model(model_type="medium"):
     """
@@ -57,7 +61,27 @@ jobs = {}
 pcs = set()
 
 # --- BATCH WORKER ---
+# --- BATCH WORKER ---
 from collections import deque
+import datetime
+
+def draw_styled_box(img, x1, y1, x2, y2, label, conf, color):
+    # Box
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+    
+    # Label with background
+    text = f"{label} {conf:.2f}"
+    font_scale = 0.8
+    thickness = 2
+    (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+    
+    cv2.rectangle(img, (x1, y1 - 25), (x1 + w, y1), color, -1)
+    cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+
+def add_timestamp(img, seconds):
+    time_str = str(datetime.timedelta(seconds=int(seconds)))
+    cv2.putText(img, f"Time: {time_str}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4) # Outline
+    cv2.putText(img, f"Time: {time_str}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2) # Text
 
 def process_video_task(input_path, output_path, job_id, is_realtime, model_type="medium", custom_labels="accident, vehicle accident", confidence_threshold=0.70, auto_report=True):
     try:
@@ -65,7 +89,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         
         # Parse custom labels
         target_labels = [l.strip().lower() for l in custom_labels.split(',') if l.strip()]
-        print(f"[{job_id}] Target Labels: {target_labels} | Conf Threshold: {confidence_threshold}")
+        print(f"[{job_id}] Target Labels: {target_labels} | Conf: {confidence_threshold}")
 
         model = get_model(model_type)
 
@@ -75,155 +99,209 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0 or fps is None:
-            fps = 30  # Fallback only if invalid
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        print(f"[{job_id}] Video Info: FPS={fps}, Frames={total_frames}, Size={width}x{height}")
-        
-        # Use WebM format with VP8 codec for browser compatibility
-        if output_path.endswith('.avi'):
-            output_path = output_path.replace('.avi', '.webm')
-        elif output_path.endswith('.mp4'):
-            output_path = output_path.replace('.mp4', '.webm')
-        
-        # Normalize FPS to 30 for WebM (some codecs don't handle non-standard FPS well)
-        # Compensate for 2x playback issue by halving the FPS
-        output_fps = fps / 2.0 if fps > 0 else 15.0
-        print(f"[{job_id}] Writing video at {output_fps} FPS (compensated)")
-        fourcc = cv2.VideoWriter_fourcc(*'VP80')
+        # Output Video Config
+        output_fps = fps if fps > 0 else 30.0
+        fourcc = cv2.VideoWriter_fourcc(*'VP80') # WebM format
         out = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
 
-        incidents = []
-        frame_count = 0
+        # --- CẤU HÌNH TỐI ƯU ---
+        FRAME_SKIP = 3  # Nhảy cóc 3 frame để tăng tốc
+        last_boxes = [] # Cache vẽ hình
         
-        # Snapshot Configuration - Use ACTUAL FPS
-        BEFORE_SECONDS = 3
-        AFTER_SECONDS = 3.5
+        # --- CẤU HÌNH SNAPSHOT & XÁC NHẬN ---
+        BEFORE_SECONDS = 4.0
+        AFTER_SECONDS = 5.0
         BUFFER_SIZE = int(fps * BEFORE_SECONDS)
-        AFTER_FRAMES = int(fps * AFTER_SECONDS)
-
+        
+        # Logic xác nhận tai nạn (Persistence Check)
+        ACCIDENT_DURATION_THRESHOLD = 0.5 
+        CONFIRMATION_FRAMES = int(fps * ACCIDENT_DURATION_THRESHOLD)
+        current_accident_streak = 0 
+        
         frame_buffer = deque(maxlen=BUFFER_SIZE) 
         snapshot_state = 'SEARCHING'
         frames_since_incident = 0
-        consecutive_accident_frames = 0 # Temporal consistency counter
-        snapshot_paths = []
+        snapshot_paths = [] # Current incident snapshots
+        all_snapshot_paths = [] # ALL incident snapshots (for frontend)
         
-        # Data dir
+        detected_accidents = []
+        current_incident_info = None
+        incidents = []
+        
+        # Tạo thư mục data nếu chưa có
         DATA_DIR = os.path.dirname(output_path)
-        if not os.path.exists(DATA_DIR):
-             try: os.makedirs(DATA_DIR)
-             except: pass
+        os.makedirs(DATA_DIR, exist_ok=True)
+        
+        frame_count = 0
         
         while cap.isOpened():
-            ret, frame = cap.read()
-            ret, frame = cap.read()
+            ret, frame = cap.read() # Chỉ giữ 1 dòng read
             
-            # --- END OF VIDEO CHECK ---
             if not ret:
-                 print(f"[{job_id}] End of video stream.")
-                 # Fallback: Capture AFTER if pending
-                 if snapshot_state == 'CAPTURING_AFTER':
-                     print(f"[{job_id}] Video ended early. Forcing capture of AFTER snapshot.")
-                     after_path = os.path.join(DATA_DIR, f"{job_id}_after.jpg")
-                     # Use last valid frame if available, else current (which is None, so careful)
-                     # Since ret is False, frame is None. Use frame_buffer[-1] or last processed
-                     if frame_buffer:
-                         cv2.imwrite(after_path, frame_buffer[-1])
-                         snapshot_paths.append(after_path)
-                 break
-            
-            # Add to buffer (save raw frame for snapshots)
-            frame_buffer.append(frame.copy())
-
-            # Inference
-            results = model(frame, verbose=False)
-            current_incident_label = None
-            current_conf = 0
-            
-            if results:
-                annotated_frame = results[0].plot()
-                
-                # Detect Incidents
-                for result in results:
-                    for box in result.boxes:
-                        conf = float(box.conf[0])
-                        cls_id = int(box.cls[0])
-                        label = model.names[cls_id]
+                print(f"[{job_id}] End of video stream.")
+                if snapshot_state == 'CAPTURING_AFTER':
+                    after_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_after.jpg")
+                    if frame_buffer:
+                        # Capture & Timestamp
+                        final_after = frame_buffer[-1].copy()
+                        add_timestamp(final_after, frame_count / fps)
+                        cv2.imwrite(after_path, final_after)
                         
-                        # Filter by custom labels
-                        if label.lower() in target_labels and conf > 0.5:
-                            incidents.append({
-                                "time": frame_count / fps,
-                                "label": label,
-                                "confidence": conf
-                            })
-                            
-                            # Snapshot logic: use dynamic confidence_threshold
-                            if conf >= confidence_threshold:
-                                consecutive_accident_frames += 1
-                            else:
-                                consecutive_accident_frames = 0
-                            
-                            # Use state check instead of missing flag
-                            if snapshot_state == 'SEARCHING':
-                                # If high confidence accident
-                                if ("accident" in label.lower() or conf > 0.70):
-                                    current_incident_label = label
-                                    print(f"[{job_id}] Accident Detected ({label} {conf:.2f}), capturing snapshots...")
-                                    
-                                    # 1. Save BEFORE (oldest in buffer)
-                                    before_frame = frame_buffer[0] if frame_buffer else frame
-                                    before_path = os.path.join(DATA_DIR, f"{job_id}_before.jpg")
-                                    cv2.imwrite(before_path, before_frame)
-                                    snapshot_paths.append(before_path)
-                                    
-                                    # 2. Save DURING (current)
-                                    during_path = os.path.join(DATA_DIR, f"{job_id}_during.jpg")
-                                    cv2.imwrite(during_path, frame)
-                                    snapshot_paths.append(during_path)
-                                    
-                                    snapshot_state = 'CAPTURING_AFTER'
-                                    frames_since_incident = 0
+                        snapshot_paths.append(after_path)
+                        all_snapshot_paths.append(after_path)
+                        # Gửi report sót lại nếu video kết thúc bất ngờ
+                        if auto_report and current_incident_info and len(snapshot_paths) >= 3:
+                             report_to_backend(snapshot_paths, current_incident_info['label'])
+                break
+            
+            frame_buffer.append(frame.copy())
+            
+            detection_found_in_this_frame = False
+            current_frame_label = ""
+            current_frame_conf = 0.0
 
+            # --- LOGIC FRAME SKIPPING ---
+            if frame_count % FRAME_SKIP == 0:
+                # Chạy AI (có imgsz=640 để tối ưu)
+                results = model.track(frame, persist=True, imgsz=640, verbose=False, tracker="bytetrack.yaml")
+                
+                last_boxes = [] # Xóa cache cũ
+                
+                if results:
+                    for result in results:
+                        for box in result.boxes:
+                            coords = tuple(map(int, box.xyxy[0]))
+                            conf = float(box.conf[0])
+                            cls_id = int(box.cls[0])
+                            label = model.names[cls_id]
+                            
+                            last_boxes.append((coords, label, conf))
+                            
+                            # Kiểm tra label và độ tin cậy
+                            if label.lower() in target_labels and conf > confidence_threshold:
+                                detection_found_in_this_frame = True
+                                current_frame_label = label
+                                current_frame_conf = conf
             else:
-                annotated_frame = frame
+                # Dùng lại kết quả từ cache (Skip frame)
+                for box_data in last_boxes:
+                    (coords, label, conf) = box_data
+                    if label.lower() in target_labels and conf > confidence_threshold:
+                        detection_found_in_this_frame = True
+                        current_frame_label = label
+                        current_frame_conf = conf
+
+            # --- VẼ HÌNH ---
+            # --- VẼ HÌNH ---
+            annotated_frame = frame.copy()
+            
+            # Timestamp cho video
+            add_timestamp(annotated_frame, frame_count / fps)
+            
+            for box_data in last_boxes:
+                (coords, label, conf) = box_data
+                x1, y1, x2, y2 = coords
+                color = (0, 0, 255) if label.lower() in target_labels else (0, 255, 0)
+                draw_styled_box(annotated_frame, x1, y1, x2, y2, label, conf, color)
+
+            # --- LOGIC XÁC NHẬN TAI NẠN (Persistence) ---
+            if detection_found_in_this_frame:
+                incidents.append({
+                    "time": frame_count / fps,
+                    "label": current_frame_label,
+                    "confidence": current_frame_conf
+                })
+                current_accident_streak += 1
+                
+                if snapshot_state == 'SEARCHING':
+                    if current_accident_streak >= CONFIRMATION_FRAMES:
+                        print(f"[{job_id}] 🚨 Accident CONFIRMED (Streak: {current_accident_streak}), capturing...")
+                        current_incident_info = incidents[-1]
+                        
+                        # 1. Save BEFORE
+                        before_frame = frame_buffer[0].copy() if frame_buffer else frame.copy()
+                        add_timestamp(before_frame, (frame_count - len(frame_buffer)) / fps if frame_buffer else frame_count/fps)
+                        before_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_before.jpg")
+                        cv2.imwrite(before_path, before_frame)
+                        snapshot_paths = [before_path] # Reset for new incident
+                        all_snapshot_paths.append(before_path)
+                        
+                        # 2. Save DURING
+                        during_frame = frame.copy()
+                        add_timestamp(during_frame, frame_count / fps)
+                        during_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_during.jpg")
+                        cv2.imwrite(during_path, during_frame)
+                        snapshot_paths.append(during_path)
+                        all_snapshot_paths.append(during_path)
+                        
+                        snapshot_state = 'CAPTURING_AFTER'
+                        frames_since_incident = 0
+            else:
+                current_accident_streak = 0
+
+            # --- VISUAL DEBUG ---
+            if current_accident_streak > 0 and snapshot_state == 'SEARCHING':
+                bar_width = min(int((current_accident_streak / CONFIRMATION_FRAMES) * 200), 200)
+                cv2.rectangle(annotated_frame, (50, 50), (50 + 200, 70), (255, 255, 255), 2)
+                cv2.rectangle(annotated_frame, (50, 50), (50 + bar_width, 70), (0, 0, 255), -1)
+                cv2.putText(annotated_frame, "CONFIRMING...", (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
             out.write(annotated_frame)
-            
-            # --- SNAPSHOT STATE MACHINE ---
-            # --- SNAPSHOT STATE MACHINE ---
-            # SEARCHING logic is handled inside Detection Loop above
 
+            # --- XỬ LÝ CHỤP ẢNH SAU & BÁO CÁO ---
             if snapshot_state == 'CAPTURING_AFTER':
                 frames_since_incident += 1
-                if frames_since_incident >= (fps * 3.5): # 3.5 sec after
+                if frames_since_incident >= (fps * AFTER_SECONDS): # Capture After Configured Seconds
                     # 3. Save AFTER
-                    after_path = os.path.join(DATA_DIR, f"{job_id}_after.jpg")
-                    cv2.imwrite(after_path, frame)
-                    snapshot_paths.append(after_path)
+                    after_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_after.jpg")
                     
-                    snapshot_state = 'DONE'
-                    print(f"[{job_id}] Snapshot sequence complete.")
+                    # Timestamp After
+                    final_after = frame.copy()
+                    add_timestamp(final_after, frame_count / fps)
+                    
+                    cv2.imwrite(after_path, final_after)
+                    snapshot_paths.append(after_path)
+                    all_snapshot_paths.append(after_path)
+                    
+                    # REPORT NGAY LẬP TỨC
+                    if auto_report and current_incident_info:
+                        report_to_backend(snapshot_paths, current_incident_info['label'], output_path)
+                    
+                    detected_accidents.append({
+                        "timestamp": current_incident_info['time'],
+                        "label": current_incident_info['label'],
+                        "snapshots": list(snapshot_paths)
+                    })
+                    
+                    snapshot_state = 'COOLDOWN'
+                    frames_since_incident = 0
+            
+            # Cooldown logic
+            if snapshot_state == 'COOLDOWN':
+                frames_since_incident += 1
+                if frames_since_incident >= (fps * 5.0):
+                    snapshot_state = 'SEARCHING'
+                    current_accident_streak = 0
 
             frame_count += 1
             
-            # Update Progress
-            if total_frames > 0:
+            # Cập nhật tiến độ mỗi 30 frame
+            if total_frames > 0 and frame_count % 30 == 0:
                 progress = int((frame_count / total_frames) * 100)
                 jobs[job_id]['progress'] = progress
-            
-            if frame_count % 30 == 0:
-                print(f"[{job_id}] Progress: {jobs[job_id]['progress']}%")
+                print(f"[{job_id}] Progress: {progress}%")
 
         cap.release()
         out.release()
         
         # Save Metadata
         metadata = {
-            "has_accident": len(incidents) > 0, 
-            "snapshot_paths": snapshot_paths,
+            "has_accident": len(detected_accidents) > 0, 
+            "snapshot_paths": all_snapshot_paths, # Send ALL snapshots
+            "detected_accidents": detected_accidents,
             "incidents": incidents
         }
         json_path = output_path + ".json" 
@@ -232,19 +310,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
 
         jobs[job_id]['status'] = 'COMPLETED'
         jobs[job_id]['progress'] = 100
-        print(f"[{job_id}] Finished. Metadata saved to {json_path}")
-        
-        # --- REPORT TO JAVA BACKEND ---
-        # --- REPORT TO JAVA BACKEND ---
-        # Ensure 3 snapshots (Pad if missing)
-        while len(snapshot_paths) < 3 and len(snapshot_paths) > 0:
-             snapshot_paths.append(snapshot_paths[-1])
-             
-        if auto_report and len(snapshot_paths) >= 3:
-             print(f"[{job_id}] Auto-report enabled. Sending to backend...")
-             report_to_backend(snapshot_paths, incidents[0]['label'] if incidents else "accident", output_path)
-        elif not auto_report:
-             print(f"[{job_id}] Auto-report disabled. Skipping backend reporting.")
+        print(f"[{job_id}] Finished.")
 
     except Exception as e:
         print(f"[{job_id}] Error: {str(e)}")
@@ -303,16 +369,54 @@ t = threading.Thread(target=start_loop, daemon=True)
 t.start()
 # -------------------------------
 
+# -------------------------------
+
 class YoloVideoTrack(VideoStreamTrack):
-    # ... [Same as before] ...
-    def __init__(self, video_path):
+    def __init__(self, job_id, video_path, auto_report=False):
         super().__init__()
+        self.job_id = job_id
+        self.auto_report = auto_report # Store flag
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
              logger.error(f"Cannot open video: {video_path}")
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
+        self.model = get_model("medium") # Default to medium for stream
+        self.frame_count = 0
+        self.skip_frames = 5 # Aggressive skip for CPU
+        self.last_boxes = []
+        
+        # Detection Config
+        self.CONF_THRESHOLD = 0.7
+        self.TARGET_LABELS = ['accident', 'vehicle accident']
+        
+        # Accident Logic
+        self.BUFFER_SIZE = int(self.fps * 4.0) # 4s Before
+        self.frame_buffer = deque(maxlen=self.BUFFER_SIZE)
+        self.snapshot_state = 'SEARCHING'
+        self.frames_since_incident = 0
+        self.current_accident_streak = 0
+        self.CONFIRMATION_FRAMES = int(self.fps * 0.5)
+        self.snapshot_paths = []
+        self.current_incident_info = None
+        
+        # Accumulators for Frontend
+        self.detected_accidents = []
+        self.all_snapshot_paths = []
+        self.all_snapshot_urls = [] # Web-accessible URLs
+        
+        # Data Dir
+        # Use Global Temp Root to avoid Live Server hot-reload
+        self.DATA_DIR = STREAM_DATA_ROOT
+        self._stopped = False  # Flag to signal recv() to stop
+        # self.DATA_DIR = os.path.join(os.getcwd(), 'data')
+        # os.makedirs(self.DATA_DIR, exist_ok=True)
+
 
     async def recv(self):
+        # Check if stream was stopped
+        if self._stopped:
+            return None
+        
         pts, time_base = await self.next_timestamp()
         ret, frame = self.cap.read()
         if not ret:
@@ -320,8 +424,149 @@ class YoloVideoTrack(VideoStreamTrack):
             ret, frame = self.cap.read()
             if not ret: return
         
-        results = model(frame, verbose=False)
-        annotated_frame = results[0].plot()
+        # --- OPTIMIZATION: RESIZE FRAME ---
+        # Reduce resolution for stream performance (e.g. max width 640)
+        h, w = frame.shape[:2]
+        if w > 640:
+            scale = 640 / w
+            new_w, new_h = 640, int(h * scale)
+            frame = cv2.resize(frame, (new_w, new_h))
+        
+        self.frame_count += 1
+        self.frame_buffer.append(frame.copy())
+        
+        detection_found = False
+        current_data = None
+        
+        # Optimization: Skip frames
+        if self.frame_count % self.skip_frames == 0:
+            results = self.model.track(frame, persist=True, imgsz=640, verbose=False, tracker="bytetrack.yaml")
+            self.last_boxes = []
+            if results:
+                for result in results:
+                    for box in result.boxes:
+                        coords = tuple(map(int, box.xyxy[0]))
+                        conf = float(box.conf[0])
+                        cls_id = int(box.cls[0])
+                        label = self.model.names[cls_id]
+                        self.last_boxes.append((coords, label, conf))
+                        
+                        if label.lower() in self.TARGET_LABELS and conf > self.CONF_THRESHOLD:
+                             detection_found = True
+                             current_data = (label, conf)
+        else:
+            # Check cached boxes for detection
+             for box_data in self.last_boxes:
+                (coords, label, conf) = box_data
+                if label.lower() in self.TARGET_LABELS and conf > self.CONF_THRESHOLD:
+                      detection_found = True
+                      current_data = (label, conf)
+        
+        # --- LOGIC DETECTION ---
+        if detection_found:
+             self.current_accident_streak += 1
+             if self.snapshot_state == 'SEARCHING':
+                  if self.current_accident_streak >= self.CONFIRMATION_FRAMES:
+                       print(f"[Stream {self.job_id}] 🚨 Accident CONFIRMED!")
+                       label, conf = current_data
+                       
+                       # Cache Info
+                       self.current_incident_info = {"label": label, "time": self.frame_count/self.fps}
+                       
+                       # 1. Save BEFORE
+                       before_frame = self.frame_buffer[0].copy() if self.frame_buffer else frame.copy()
+                       add_timestamp(before_frame, (self.frame_count - len(self.frame_buffer)) / self.fps if self.frame_buffer else self.frame_count/self.fps)
+                       before_path = os.path.join(self.DATA_DIR, f"{self.job_id}_{self.frame_count}_before.jpg")
+                       cv2.imwrite(before_path, before_frame)
+                       self.snapshot_paths = [before_path]
+                       self.all_snapshot_paths.append(before_path)
+                       self.all_snapshot_urls.append(f"/data/{os.path.basename(before_path)}")
+                       
+                       # 2. Save DURING
+                       during_frame = frame.copy()
+                       add_timestamp(during_frame, self.frame_count / self.fps)
+                       during_path = os.path.join(self.DATA_DIR, f"{self.job_id}_{self.frame_count}_during.jpg")
+                       cv2.imwrite(during_path, during_frame)
+                       self.snapshot_paths.append(during_path)
+                       self.all_snapshot_paths.append(during_path)
+                       self.all_snapshot_urls.append(f"/data/{os.path.basename(during_path)}")
+                       
+                       self.snapshot_state = 'CAPTURING_AFTER'
+                       self.frames_since_incident = 0
+                       
+                       # Update Global Job Status for Frontend
+                       if self.job_id in jobs:
+                            jobs[self.job_id]['status'] = 'DETECTED' 
+                            # jobs[self.job_id].setdefault('incidents', []).append(self.current_incident_info)
+                            # We update via 'detected_accidents' in AFTER block to be complete.
+
+        else:
+             self.current_accident_streak = 0
+             
+        # --- LOGIC AFTER ---
+        if self.snapshot_state == 'CAPTURING_AFTER':
+             self.frames_since_incident += 1
+             if self.frames_since_incident >= (self.fps * 5.0): # 5s After
+                  # 3. Save AFTER
+                  after_frame = frame.copy()
+                  add_timestamp(after_frame, self.frame_count / self.fps)
+                  after_path = os.path.join(self.DATA_DIR, f"{self.job_id}_{self.frame_count}_after.jpg")
+                  cv2.imwrite(after_path, after_frame)
+                  self.snapshot_paths.append(after_path)
+                  self.all_snapshot_paths.append(after_path)
+                  self.all_snapshot_urls.append(f"/data/{os.path.basename(after_path)}")
+                  
+                  # Log incident
+                  self.detected_accidents.append({
+                        "timestamp": self.current_incident_info['time'],
+                        "label": self.current_incident_info['label'],
+                        "snapshots": list(self.snapshot_paths)
+                  })
+
+                  # Report / Update
+                  # Report / Update
+                  if self.auto_report:
+                       print(f"[Stream {self.job_id}] Snapshot complete. Reporting...")
+                  # else:
+                       # print(f"[Stream {self.job_id}] Snapshot complete. Stored locally.")
+                  
+                  # Update Global Metadata for Frontend Polling
+                  if self.job_id in jobs:
+                       jobs[self.job_id]['snapshot_paths'] = list(self.all_snapshot_paths) # ALL images
+                       jobs[self.job_id]['snapshot_urls'] = list(self.all_snapshot_urls) # URLs for Frontend
+                       jobs[self.job_id]['detected_accidents'] = self.detected_accidents # Structured Data
+                       jobs[self.job_id]['has_accident'] = True
+                  
+                  # Conditional Auto Report
+                  if self.auto_report:
+                       report_to_backend(self.snapshot_paths, self.current_incident_info['label'])
+                  else:
+                       print(f"[Stream {self.job_id}] Auto-report disabled. Skipping.")
+                  
+                  self.snapshot_state = 'COOLDOWN'
+                  self.frames_since_incident = 0
+
+        if self.snapshot_state == 'COOLDOWN':
+             self.frames_since_incident += 1
+             if self.frames_since_incident >= (self.fps * 5.0):
+                  self.snapshot_state = 'SEARCHING'
+
+        # Draw cached boxes
+        annotated_frame = frame.copy()
+        add_timestamp(annotated_frame, self.frame_count / self.fps)
+        
+        # Visual Debug Bar
+        if self.current_accident_streak > 0 and self.snapshot_state == 'SEARCHING':
+             bar_width = min(int((self.current_accident_streak / self.CONFIRMATION_FRAMES) * 200), 200)
+             cv2.rectangle(annotated_frame, (50, 50), (50 + bar_width, 70), (0, 0, 255), -1)
+             cv2.putText(annotated_frame, "CONFIRMING...", (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        for box_data in self.last_boxes:
+            (coords, label, conf) = box_data
+            x1, y1, x2, y2 = coords
+            # Filter labels if needed, or use all
+            color = (0, 0, 255) if "accident" in label.lower() else (0, 255, 0)
+            draw_styled_box(annotated_frame, x1, y1, x2, y2, label, conf, color)
         frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
         
         video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
@@ -330,6 +575,8 @@ class YoloVideoTrack(VideoStreamTrack):
         return video_frame
 
     def stop(self):
+        self._stopped = True  # Signal recv() to stop
+        print(f"[Stream {self.job_id}] Stop signal received.")
         if self.cap: self.cap.release()
         super().stop()
 
@@ -365,7 +612,8 @@ def process_video():
             "inputPath": input_path,
             "type": "REALTIME",
             "status": "READY",
-            "modelType": model_type
+            "modelType": model_type,
+            "autoReport": auto_report # Store flag
         }
     else:
         # BATCH JOB
@@ -412,12 +660,23 @@ async def run_offer(params):
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
         print(f"Connection state is {pc.connectionState}")
-        if pc.connectionState in ["failed", "closed"]:
+        if pc.connectionState in ["failed", "closed", "disconnected"]:
+            print("Client disconnected, cleaning up...")
             await pc.close()
             pcs.discard(pc)
+            
+            # Explicitly stop tracks and update job status
+            for sender in pc.getSenders():
+                if sender.track:
+                    sender.track.stop()
+            
+            if job_id in jobs:
+                jobs[job_id]['status'] = 'STOPPED'
+                print(f"Job {job_id} stopped.")
 
     if os.path.exists(job["inputPath"]):
-        video_track = YoloVideoTrack(job["inputPath"])
+        # Pass auto_report from job config
+        video_track = YoloVideoTrack(job_id, job["inputPath"], job.get("autoReport", False))
         pc.addTrack(video_track)
     else:
         print(f"ERROR: File not found {job['inputPath']}")
@@ -438,6 +697,10 @@ def offer():
     except Exception as e:
         logger.error(f"Offer failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/data/<path:filename>')
+def serve_data(filename):
+    return send_from_directory(STREAM_DATA_ROOT, filename)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

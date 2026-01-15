@@ -509,7 +509,7 @@ class TrafficMonitorApp(QMainWindow):
         # Model Selector
         lbl_model = QLabel("Select YOLO Model:")
         self.scan_model_combo = QComboBox()
-        self.scan_model_combo.addItems(["model/small/best.pt", "model/medium/mediumv3.pt", "model/nano/nano.pt"])
+        self.scan_model_combo.addItems(["model/small/best.pt", "model/medium/mediumv1.pt"])
         self.scan_model_combo.setCurrentIndex(1) 
         layout_detect.addWidget(lbl_model)
         layout_detect.addWidget(self.scan_model_combo)
@@ -1286,10 +1286,8 @@ class TrafficMonitorApp(QMainWindow):
 
         idx = self.combo_model.currentIndex()
         if idx == 0: model_path = 'model/small/best.pt'
-        elif idx == 1: model_path = 'model/medium/best.pt'
-        elif idx == 2: model_path = 'model/medium/mediumv2.pt'
-        elif idx == 3: model_path = 'model/medium/mediumv3.pt'
-        else: model_path = 'model/small/best.pt'
+        elif idx == 1: model_path = 'model/medium/mediumv1.pt'
+        else: model_path = 'model/small/best.pt'  # Fallback
         
         # SWITCH BACK TO LIVE VIEW (Page 0)
         self.stack_video.setCurrentIndex(0)

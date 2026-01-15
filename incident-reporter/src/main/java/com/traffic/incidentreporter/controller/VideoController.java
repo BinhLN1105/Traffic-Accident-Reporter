@@ -58,9 +58,9 @@ public class VideoController {
 
             Files.copy(file.getInputStream(), inputLocation, StandardCopyOption.REPLACE_EXISTING);
 
-            // Async Submit
-            String pythonScript = "d:/ProjectHTGTTM_CarTrafficReport/traffic-ai-client/video_processor.py";
-            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), pythonScript, isRealtime, modelType, customLabels, confidenceThreshold, autoReport);
+
+            // Async Submit (no longer needs pythonScript path - uses HTTP API)
+            String taskId = processingManager.submitTask(inputLocation.toString(), outputLocation.toString(), null, isRealtime, modelType, customLabels, confidenceThreshold, autoReport);
 
             Map<String, String> response = new HashMap<>();
             response.put("taskId", taskId);
@@ -130,6 +130,24 @@ public class VideoController {
             result.put("aiReport", aiReport);
             result.put("success", true);
             return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage(), "success", false));
+        }
+    }
+
+    // NEW: Update task snapshots from frontend (for Realtime mode)
+    @PostMapping("/update-snapshots/{taskId}")
+    public ResponseEntity<Map<String, Object>> updateSnapshots(
+            @PathVariable String taskId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            @SuppressWarnings("unchecked")
+            List<String> snapshotUrls = (List<String>) request.get("snapshotUrls");
+            if (snapshotUrls == null || snapshotUrls.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "No snapshot URLs provided", "success", false));
+            }
+            processingManager.updateTaskSnapshots(taskId, snapshotUrls);
+            return ResponseEntity.ok(Map.of("success", true, "message", "Snapshots updated"));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage(), "success", false));
         }
