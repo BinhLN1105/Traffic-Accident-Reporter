@@ -42,24 +42,33 @@ public class VideoProcessingManager {
         public Status status;
         public String message;
         public String outputFilePath;
+        public String inputFilePath; // NEW: Store input video path for browser playback
         public int progress = 0;
         public String aiReport; 
         public Object incidents; // List of incidents from JSON
+        public List<String> snapshotPaths; // ADDED
+        public Boolean autoReport = true; // NEW: Auto-report flag
 
         public TaskStatus(String id) {
             this.id = id;
             this.status = Status.PENDING;
             this.message = "Queued...";
+            this.snapshotPaths = new ArrayList<>();
         }
     }
 
     private final Map<String, TaskStatus> tasks = new ConcurrentHashMap<>();
 
-    public String submitTask(String inputPath, String outputPath, String pythonScriptPath) {
+    public String submitTask(String inputPath, String outputPath, String pythonScriptPath, boolean isRealtime, String modelType, String customLabels, Double confidenceThreshold, Boolean autoReport) {
         try {
-            Map<String, String> request = new HashMap<>();
+            Map<String, Object> request = new HashMap<>();
             request.put("inputPath", inputPath);
             request.put("outputPath", outputPath);
+            request.put("realtime", isRealtime);
+            request.put("modelType", modelType);
+            request.put("customLabels", customLabels);
+            request.put("confidenceThreshold", confidenceThreshold);
+            request.put("autoReport", autoReport); // NEW: Pass autoReport flag
 
             ResponseEntity<Map> response = restTemplate.postForEntity(PYTHON_SERVER_URL + "/process", request, Map.class);
             
@@ -67,9 +76,11 @@ public class VideoProcessingManager {
                 String jobId = (String) response.getBody().get("jobId");
                 
                 TaskStatus status = new TaskStatus(jobId);
+                status.autoReport = autoReport; // Store for later
+                status.inputFilePath = inputPath; // Store input path for browser playback
                 tasks.put(jobId, status);
                 
-                executor.submit(() -> monitorTask(jobId, outputPath));
+                executor.submit(() -> monitorTask(jobId, outputPath, autoReport));
                 
                 return jobId;
             } else {
@@ -86,7 +97,41 @@ public class VideoProcessingManager {
         return tasks.get(taskId);
     }
 
-    private void monitorTask(String taskId, String outputPath) {
+    // NEW: Generate AI report on-demand (manual mode)
+    public String generateReportOnDemand(String taskId) throws Exception {
+        TaskStatus status = tasks.get(taskId);
+        if (status == null) {
+            throw new Exception("Task not found: " + taskId);
+        }
+        
+        // If already has report, return it
+        if (status.aiReport != null && !status.aiReport.isEmpty()) {
+            return status.aiReport;
+        }
+        
+        // Generate report from snapshots
+        if (status.snapshotPaths != null && !status.snapshotPaths.isEmpty()) {
+            List<Path> pathList = new ArrayList<>();
+            // Use middle snapshot (best quality)
+            String middleSnapshot = status.snapshotPaths.get(status.snapshotPaths.size() / 2);
+            // Resolve full path using relative path (project root/data/)
+            Path dataDir = Paths.get(System.getProperty("user.dir")).getParent().resolve("data");
+            Path fullPath = dataDir.resolve(middleSnapshot);
+            if (!fullPath.toFile().exists()) {
+                fullPath = Paths.get(middleSnapshot); // Try as-is (already absolute path)
+            }
+            pathList.add(fullPath);
+            
+            String aiReport = geminiService.analyzeImage(pathList);
+            status.aiReport = aiReport;
+            return aiReport;
+        }
+        
+        throw new Exception("No snapshots available for analysis");
+    }
+
+
+    private void monitorTask(String taskId, String outputPath, Boolean autoReport) {
         TaskStatus localStatus = tasks.get(taskId);
         
         while (true) {
@@ -109,21 +154,29 @@ public class VideoProcessingManager {
                         
                         // --- POST-PROCESSING: Read Metadata & Call AI & Save to DB ---
                         try {
-                            File metadataFile = new File(outputPath.replace(".webm", ".json"));
+                            // Python appends .json to the full output path (e.g. video.webm -> video.webm.json)
+                            File metadataFile = new File(outputPath + ".json");
                             if (!metadataFile.exists()) {
-                                // Fallback for legacy .mp4 tasks or if replacement failed
-                                metadataFile = new File(outputPath.replace(".mp4", ".json"));
+                                // Fallback: Try replaced extension if appended not found
+                                metadataFile = new File(outputPath.replace(".webm", ".json"));
                             }
                             
                             if (metadataFile.exists()) {
                                 ObjectMapper mapper = new ObjectMapper();
                                 Map<String, Object> metadata = mapper.readValue(metadataFile, Map.class);
                                 
-                                // READ INCIDENTS LIST
                                 localStatus.incidents = metadata.get("incidents");
                                 
                                 boolean hasAccident = (boolean) metadata.getOrDefault("has_accident", false);
                                 List<String> snapshotPaths = (List<String>) metadata.get("snapshot_paths");
+                                
+                                // Store relative paths for Frontend
+                                if (snapshotPaths != null) {
+                                     localStatus.snapshotPaths = new ArrayList<>();
+                                     for(String p : snapshotPaths) {
+                                         localStatus.snapshotPaths.add(new File(p).getName());
+                                     }
+                                }
                                 String legacySnapshot = (String) metadata.get("snapshot_path");
                                 
                                 // Determine primary snapshot for DB/Display
@@ -137,7 +190,8 @@ public class VideoProcessingManager {
                                     }
                                 }
 
-                                if (hasAccident) {
+                                // Only run AI analysis if autoReport is enabled
+                                if (autoReport != null && autoReport && hasAccident) {
                                     // Trigger Gemini
                                     localStatus.message = "Đang phân tích AI (Đa khung hình)...";
                                     
@@ -165,41 +219,63 @@ public class VideoProcessingManager {
 
                                     localStatus.aiReport = aiReport;
                                     localStatus.message = "Phân tích hoàn tất";
-
-                                    // SAVE TO DATABASE
-                                    try {
-                                        if (primarySnapshotPath != null) {
-                                            Incident incident = new Incident();
-                                            
-                                            // MANUAL ID ASSIGNMENT (GAP FILLING STRATEGY)
-                                            Long newId = 1L;
-                                            if (!incidentRepository.existsById(1L)) {
-                                                newId = 1L;
-                                            } else {
-                                                Long gapId = incidentRepository.findNextAvailableId();
-                                                if (gapId != null) {
-                                                    newId = gapId;
+                                                
+                                    // Only save to DB if autoReport is enabled
+                                    if (autoReport != null && autoReport) {
+                                        // SAVE TO DATABASE
+                                        try {
+                                            if (primarySnapshotPath != null) {
+                                                Incident incident = new Incident();
+                                                
+                                                // MANUAL ID ASSIGNMENT (GAP FILLING STRATEGY)
+                                                Long newId = 1L;
+                                                if (!incidentRepository.existsById(1L)) {
+                                                    newId = 1L;
                                                 } else {
-                                                    Long maxId = incidentRepository.findMaxId();
-                                                    newId = (maxId != null) ? maxId + 1 : 1L;
+                                                    Long gapId = incidentRepository.findNextAvailableId();
+                                                    if (gapId != null) {
+                                                        newId = gapId;
+                                                    } else {
+                                                        Long maxId = incidentRepository.findMaxId();
+                                                        newId = (maxId != null) ? maxId + 1 : 1L;
+                                                    }
                                                 }
+                                                incident.setId(newId);
+
+                                                incident.setType("Accident"); 
+                                                incident.setTimestamp(LocalDateTime.now());
+                                                incident.setDescription(aiReport); 
+                                                incident.setLocation("Camera-01 (Video Analysis)");
+                                                incident.setImageUrl("/api/videos/download/" + new File(primarySnapshotPath).getName()); 
+                                                
+                                                // NEW: Set videoUrl
+                                                incident.setVideoUrl("/api/videos/download/" + new File(outputPath).getName());
+                                                
+                                                // NEW: Set snapshotUrls as JSON array
+                                                if (snapshotPaths != null && !snapshotPaths.isEmpty()) {
+                                                    ObjectMapper snapshotMapper = new ObjectMapper();
+                                                    List<String> snapshotUrlList = new ArrayList<>();
+                                                    for (String path : snapshotPaths) {
+                                                        snapshotUrlList.add("/api/videos/download/" + new File(path).getName());
+                                                    }
+                                                    incident.setSnapshotUrls(snapshotMapper.writeValueAsString(snapshotUrlList));
+                                                }
+                                                
+                                                // NEW: Set aiReport (full AI analysis)
+                                                incident.setAiReport(aiReport);
+                                                
+                                                incident.setAlertSent(false);
+
+                                                incidentRepository.save(incident);
+                                                System.out.println("Incident saved to Database: " + incident.getId());
                                             }
-                                            incident.setId(newId);
-
-                                            incident.setType("Accident"); 
-                                            incident.setTimestamp(LocalDateTime.now());
-                                            incident.setDescription(aiReport); 
-                                            incident.setLocation("Camera-01 (Video Analysis)");
-                                            incident.setImageUrl("/api/videos/download/" + new File(primarySnapshotPath).getName()); 
-                                            incident.setAlertSent(false);
-
-                                            incidentRepository.save(incident);
-                                            System.out.println("Incident saved to Database: " + incident.getId());
+                                        } catch (Exception dbEx) {
+                                            System.err.println("Database Save Failed: " + dbEx.getMessage());
+                                            dbEx.printStackTrace();
                                         }
-                                    } catch (Exception dbEx) {
-                                        System.err.println("Database Save Failed: " + dbEx.getMessage());
-                                        dbEx.printStackTrace();
-                                    }
+                                    } else {
+                                        System.out.println("Auto-report disabled. Skipping database save.");
+                                    }                   
                                 }
                             }
                         } catch (Exception e) {
