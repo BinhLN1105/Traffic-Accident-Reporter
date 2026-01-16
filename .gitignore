@@ -1,6 +1,8 @@
 # User Data
 data/*
+data/analyst_output/*
 !data/.gitkeep
+!data/analyst_output/.gitkeep
 *.mp4
 *.jpg
 *.png
@@ -31,5 +33,8 @@ env/
 .gemini/
 
 # Remove commit git model over 100MB
-traffic-ai-client/model/medium/best.pt
 traffic-ai-client/model/medium/mediumv1.pt
+
+# Cho phép push file .gitkeep trong folder medium để giữ folder
+!traffic-ai-client/model/medium/.gitkeep
+!traffic-ai-client/model/nano/.gitkeep

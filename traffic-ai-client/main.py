@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QTextEdit, QComboBox, QSlider,
     QTabWidget, QGroupBox, QFileDialog, QStatusBar, QGridLayout,
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QSizePolicy,
-    QScrollArea, QStackedWidget, QProgressBar
+    QScrollArea, QStackedWidget, QProgressBar, QSplitter, QListWidget, QListWidgetItem
 )
 from PyQt6.QtGui import QPixmap, QImage, QFont
 from PyQt6.QtCore import pyqtSlot, Qt, QThread, QDateTime
@@ -47,6 +47,30 @@ class ReportWorker(QThread):
             self.finished.emit(result)
         except Exception as e:
             self.finished.emit({'success': False, 'report': str(e)})
+
+class ReportWorker(QThread):
+    finished = pyqtSignal(dict)
+    
+    def __init__(self, generator, snapshots, incident_id=None, video_source=None):
+        super().__init__()
+        self.generator = generator
+        self.snapshots = snapshots
+        self.incident_id = incident_id
+        self.video_source = video_source
+        
+    def run(self):
+        try:
+             # Pass incident_type="vehicle accident" explicitly
+             # Unpack snapshots list to match signature (before, during, after)
+             if len(self.snapshots) >= 3:
+                 p1, p2, p3 = self.snapshots[:3]
+                 result = self.generator.generate_report(p1, p2, p3, "vehicle accident", self.video_source)
+                 self.finished.emit(result)
+             else:
+                 self.finished.emit({'success': False, 'report': "Invalid snapshots"})
+        except Exception as e:
+             print(f"ReportWorker API Error: {e}")
+             self.finished.emit({'success': False, 'report': str(e)})
 
 class TrafficMonitorApp(QMainWindow):
     def __init__(self):
@@ -237,10 +261,8 @@ class TrafficMonitorApp(QMainWindow):
         model_layout = QVBoxLayout()
         self.combo_model = QComboBox()
         self.combo_model.addItems([
-            "Standard (Small)",
-            "Premium (Medium)",
-            "Premium V2",
-            "Premium V3 (Latest)"
+            "Small v1 (Fast)",
+            "Medium v1 (Accurate)"
         ])
         self.combo_model.setCurrentIndex(1)
         model_layout.addWidget(self.combo_model)
@@ -276,7 +298,11 @@ class TrafficMonitorApp(QMainWindow):
         self.btn_manual_report.setToolTip("Generate report for the currently displayed snapshots")
         self.btn_manual_report.setEnabled(False) # Enabled only when snapshots exist
         self.btn_manual_report.clicked.connect(self.manual_report_generation)
-        self.btn_manual_report.setStyleSheet("background: #d97706; border: 1px solid #b45309;") # Orange/Amber color
+        self.btn_manual_report.setStyleSheet("""
+            QPushButton { background: #d97706; border: 1px solid #b45309; border-radius: 4px; color: white; padding: 6px; }
+            QPushButton:hover { background: #b45309; }
+            QPushButton:disabled { background: #444; color: #888; border: 1px solid #555; }
+        """)
         ai_layout.addWidget(self.btn_manual_report)
         
         # NEW: View Report Button (for viewing result after generation)
@@ -286,7 +312,10 @@ class TrafficMonitorApp(QMainWindow):
             self.last_report_text if hasattr(self, 'last_report_text') else "No Report", 
             self.snapshot_paths if hasattr(self, 'snapshot_paths') else []
         ))
-        self.btn_view_report.setStyleSheet("background: #059669; border: 1px solid #047857;") # Emerald/Green
+        self.btn_view_report.setStyleSheet("""
+            QPushButton { background: #059669; border: 1px solid #047857; border-radius: 4px; color: white; padding: 6px; }
+            QPushButton:hover { background: #047857; }
+        """)
         ai_layout.addWidget(self.btn_view_report)
         
         ai_report_group.setLayout(ai_layout)
@@ -304,6 +333,15 @@ class TrafficMonitorApp(QMainWindow):
         self.btn_cancel.setMinimumHeight(45)
         self.btn_cancel.setStyleSheet("background-color: #ef4444; color: white; font-weight: bold;") 
         right_panel.addWidget(self.btn_cancel)
+
+        # RE-ADDED: Play Only Button
+        self.btn_play_only = QPushButton("🎬 Play Video (No AI)")
+        self.btn_play_only.setToolTip("Watch valid video file without running detection")
+        self.btn_play_only.setEnabled(False) 
+        self.btn_play_only.clicked.connect(self.play_video_only)
+        self.btn_play_only.setMinimumHeight(45)
+        self.btn_play_only.setStyleSheet("background-color: #6366f1; color: white; font-weight: bold;") # Indigo
+        right_panel.addWidget(self.btn_play_only)
         
         # Toggle buttons & Log (Right Panel)
         toggle_layout = QHBoxLayout()
@@ -344,103 +382,96 @@ class TrafficMonitorApp(QMainWindow):
         layout.addWidget(right_scroll)
         
     def setup_analyst_tab(self):
-        """Setup Modern Video Analyst Interface"""
-        # Main Layout (Scrollable Wrapper)
+        """Setup Modern Video Analyst Interface (Split View)"""
         main_layout = QVBoxLayout(self.tab_analyst)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        # --- MAIN SPLIT VIEW (Vertical: Content / Snapshots) ---
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
         
-        # Scrollable Content
-        content_widget = QWidget()
-        scroll_area.setWidget(content_widget)
-        main_layout.addWidget(scroll_area)
+        # 1. TOP SECTION (Horizontal: List / Player)
+        self.top_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Horizontal Split Layout (Left: Video, Right: Settings)
-        layout = QHBoxLayout(content_widget)
-        layout.setContentsMargins(10, 10, 10, 10)
+        # A. Result List (Left)
+        # ---------------------
+        list_container = QWidget()
+        list_layout = QVBoxLayout(list_container)
+        list_layout.setContentsMargins(5, 5, 5, 5)
         
-        # --- LEFT: Video (Big Area) ---
-        container_left = QWidget()
-        layout_left = QVBoxLayout(container_left)
-        layout_left.setContentsMargins(0,0,10,0)
+        lbl_list = QLabel("📋 Finished Videos")
+        lbl_list.setStyleSheet("font-weight: bold; font-size: 14px; color: #ccc;") # Light color for dark theme
+        self.list_analyst_results = QListWidget()
+        self.list_analyst_results.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.list_analyst_results.itemClicked.connect(self.on_result_list_clicked)
+        self.list_analyst_results.setMaximumWidth(250)
+        # Force Style for List
+        self.list_analyst_results.setStyleSheet("""
+            QListWidget {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #444;
+                border-radius: 4px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #333;
+            }
+            QListWidget::item:selected {
+                background-color: #3b82f6;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: #333;
+            }
+        """)
         
-        # 1. Video Stack (Flexible Sizing)
+        list_layout.addWidget(lbl_list)
+        list_layout.addWidget(self.list_analyst_results)
+        self.top_splitter.addWidget(list_container)
+        
+        # B. Video Player Area (Right)
+        # ----------------------------
+        video_container = QWidget()
+        video_layout = QVBoxLayout(video_container)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.analyst_stack = QStackedWidget()
         self.analyst_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # self.analyst_stack.setMinimumSize(900, 500) # REMOVED FIXED SIZE
-        self.analyst_stack.setMinimumHeight(400) # Smaller reasonable min height
         
-        # Page 0: Upload Prompt
+        # Page 0: Placeholder
         self.page_upload = QWidget()
         layout_upload = QVBoxLayout(self.page_upload)
-        
-        lbl_icon = QLabel("📂")
-        lbl_icon.setStyleSheet("font-size: 64px; color: #555; border: none;")
+        lbl_icon = QLabel("🎬")
+        lbl_icon.setStyleSheet("font-size: 64px; color: #444;")
         lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        lbl_text = QLabel("Select a Video File to Begin Analysis")
-        lbl_text.setStyleSheet("font-size: 18px; color: #888; font-weight: bold; border: none;")
-        lbl_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        btn_browse_big = QPushButton("Browse Files")
-        btn_browse_big.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_browse_big.setFixedSize(200, 50)
-        btn_browse_big.setStyleSheet("""
-            QPushButton {
-                background-color: #3b82f6; color: white; border-radius: 25px; font-size: 16px;
-            }
-            QPushButton:hover { background-color: #2563eb; }
-        """)
-        btn_browse_big.clicked.connect(self.select_analyst_video)
+        lbl_text = QLabel("Select videos to start")
+        lbl_text.setStyleSheet("color: #666; font-size: 16px;")
+        lbl_text.setAlignment(Qt.AlignmentFlag.AlignLeft)
         
         layout_upload.addStretch()
-        layout_upload.addWidget(lbl_icon)
-        layout_upload.addWidget(lbl_text)
-        layout_upload.addWidget(btn_browse_big, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout_upload.addWidget(lbl_icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout_upload.addWidget(lbl_text, 0, Qt.AlignmentFlag.AlignHCenter)
         layout_upload.addStretch()
-        
         self.analyst_stack.addWidget(self.page_upload)
         
-        # Page 1: Video Player Container
+        # Page 1: Player
         self.analyst_player_container = QWidget()
         self.analyst_player_layout = QVBoxLayout(self.analyst_player_container)
         self.analyst_player_layout.setContentsMargins(0,0,0,0)
-        
-        # Loading / Progress UI (Initially Hidden)
-        self.analyst_loading_container = QWidget(self.analyst_player_container)
-        self.analyst_loading_layout = QVBoxLayout(self.analyst_loading_container)
-        self.analyst_loading_container.hide()
-        
-        self.lbl_analyst_loading = QLabel("Analyzing Video... 0%")
-        self.lbl_analyst_loading.setStyleSheet("font-size: 24px; color: #3b82f6; font-weight: bold;")
-        self.lbl_analyst_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        self.analyst_progress = QProgressBar()
-        self.analyst_progress.setRange(0, 100)
-        self.analyst_progress.setValue(0)
-        self.analyst_progress.setTextVisible(False)
-        self.analyst_progress.setFixedHeight(10)
-        self.analyst_progress.setStyleSheet("""
-            QProgressBar { border-radius: 5px; background: #333; }
-            QProgressBar::chunk { background: #3b82f6; border-radius: 5px; }
-        """)
-        
-        self.analyst_loading_layout.addStretch()
-        self.analyst_loading_layout.addWidget(self.lbl_analyst_loading)
-        self.analyst_loading_layout.addWidget(self.analyst_progress)
-        self.analyst_loading_layout.addStretch()
-        
-        self.analyst_player_layout.addWidget(self.analyst_loading_container)
-        
         self.analyst_stack.addWidget(self.analyst_player_container)
         
-        layout_left.addWidget(self.analyst_stack, 70) 
-
-        # 2. Snapshot Gallery (Initially Hidden)
-        self.analyst_snapshot_group = QGroupBox("📸 Analysis Results")
+        video_layout.addWidget(self.analyst_stack)
+        self.top_splitter.addWidget(video_container)
+        
+        # Set Top Splitter Ratios (List small, Video big)
+        self.top_splitter.setStretchFactor(0, 1)
+        self.top_splitter.setStretchFactor(1, 4)
+        
+        self.main_splitter.addWidget(self.top_splitter)
+        
+        # 2. BOTTOM SECTION: Snapshots
+        # ----------------------------
+        self.analyst_snapshot_group = QGroupBox("📸 Analysis Results (Snapshots)")
         self.analyst_snapshot_layout = QHBoxLayout()
         self.analyst_snapshot_layout.setSpacing(15)
         
@@ -448,155 +479,143 @@ class TrafficMonitorApp(QMainWindow):
         self.lbl_analyst_res_during = QLabel("During")
         self.lbl_analyst_res_after = QLabel("After")
         
-        # Style the labels
         for lbl in [self.lbl_analyst_res_before, self.lbl_analyst_res_during, self.lbl_analyst_res_after]:
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet("border: 1px dashed #666; background: #222; color: #888;")
             lbl.setFixedSize(280, 160) 
             lbl.setScaledContents(True)
-            lbl.setCursor(Qt.CursorShape.PointingHandCursor) # Make clickable
-            
-            # Enable Click to View via lambda binding
+            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
             lbl.mousePressEvent = lambda event, l=lbl: self.on_snapshot_click(l)
-            
             self.analyst_snapshot_layout.addWidget(lbl)
             
         self.analyst_snapshot_group.setLayout(self.analyst_snapshot_layout)
-        self.analyst_snapshot_group.hide() # Hide until analysis done
+        self.main_splitter.addWidget(self.analyst_snapshot_group)
         
-        layout_left.addWidget(self.analyst_snapshot_group, 30)
+        # Vertical Ratio (Video bigger than Snapshots)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 1)
         
-        # --- RIGHT: Controls & Results ---
-        # Wrapper for Scroll Area
-        # Wrapper for Scroll Area
+        # Add Splitter to Layout
+        content_layout = QHBoxLayout() # Wrapper to hold Splitter + Right Panel
+        content_layout.addWidget(self.main_splitter, 75)
+        
+        # --- RIGHT PANEL: Controls ---
+        # -----------------------------
         container_right_wrapper = QWidget()
-        container_right_wrapper.setMaximumWidth(420) 
-        container_right_wrapper.setObjectName("analystRightPanelWrapper") # IDs for Theming
+        container_right_wrapper.setMaximumWidth(320)
         layout_right_wrapper = QVBoxLayout(container_right_wrapper)
-        layout_right_wrapper.setContentsMargins(0,0,0,0)
+        layout_right_wrapper.setContentsMargins(5, 5, 5, 5)
         
-        # Scroll Area
-        scroll_right = QScrollArea()
-        scroll_right.setWidgetResizable(True)
-        scroll_right.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll_right.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        
-        # Content Widget
-        container_right = QWidget()
-        container_right.setObjectName("analystRightPanel") # IDs for Theming
-        layout_right = QVBoxLayout(container_right)
-        layout_right.setSpacing(20)
-        
-        scroll_right.setWidget(container_right)
-        layout_right_wrapper.addWidget(scroll_right)
-        
-        # Header
-        lbl_r_header = QLabel("⚙️ Analysis Settings")
-        lbl_r_header.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        layout_right.addWidget(lbl_r_header)
+        # 1. Add Files Button (Top)
+        self.btn_add_files = QPushButton("📂 Select / Add Files")
+        self.btn_add_files.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_files.setMinimumHeight(45)
+        self.btn_add_files.setStyleSheet("background-color: #3b82f6; color: white; font-weight: bold;")
+        self.btn_add_files.clicked.connect(self.select_analyst_video)
+        layout_right_wrapper.addWidget(self.btn_add_files)
         
         # Selected File Info
-        self.lbl_selected_file = QLabel("No file selected")
+        self.lbl_selected_file = QLabel("No files selected")
         self.lbl_selected_file.setWordWrap(True)
-        self.lbl_selected_file.setObjectName("lblSelectedFile") # Use ID instead of inline style
-        layout_right.addWidget(self.lbl_selected_file)
+        self.lbl_selected_file.setStyleSheet("color: #888; font-style: italic;")
+        layout_right_wrapper.addWidget(self.lbl_selected_file)
+        
+        layout_right_wrapper.addSpacing(10)
 
-        # --- Detection Controls ---
-        grp_detect = QGroupBox("🔍 Detection Configuration")
-        # Inline style removed, will use global theme
+        # Settings Group
+        grp_detect = QGroupBox("⚙️ Configuration")
         layout_detect = QVBoxLayout(grp_detect)
-
-        # Model Selector
-        lbl_model = QLabel("Select YOLO Model:")
+        
+        layout_detect.addWidget(QLabel("Model:"))
         self.scan_model_combo = QComboBox()
         self.scan_model_combo.addItems(["model/small/best.pt", "model/medium/mediumv1.pt"])
         self.scan_model_combo.setCurrentIndex(1) 
-        layout_detect.addWidget(lbl_model)
         layout_detect.addWidget(self.scan_model_combo)
-
-        # Confidence Slider
-        lbl_conf = QLabel("Confidence Threshold:")
-        self.lbl_conf_val = QLabel("70%")
-        self.lbl_conf_val.setStyleSheet("color: #3b82f6; font-weight: bold;") # This color is fine for both
         
-        row_conf = QHBoxLayout()
-        row_conf.addWidget(lbl_conf)
-        row_conf.addStretch()
-        row_conf.addWidget(self.lbl_conf_val)
-        
+        self.lbl_conf_val = QLabel("Conf: 70%")
         self.scan_conf_slider = QSlider(Qt.Orientation.Horizontal)
         self.scan_conf_slider.setRange(0, 100)
         self.scan_conf_slider.setValue(70)
-        self.scan_conf_slider.valueChanged.connect(lambda v: self.lbl_conf_val.setText(f"{v}%"))
+        self.scan_conf_slider.valueChanged.connect(lambda v: self.lbl_conf_val.setText(f"Conf: {v}%"))
         
-        layout_detect.addWidget(lbl_conf)  # Re-add label line if layout needs vertical stacking
-        layout_detect.addLayout(row_conf)
+        layout_detect.addWidget(self.lbl_conf_val)
         layout_detect.addWidget(self.scan_conf_slider)
+        layout_right_wrapper.addWidget(grp_detect)
         
-        layout_right.addWidget(grp_detect)
-
-        # --- AI Reporting Controls ---
-        # --- AI Reporting Controls ---
-        grp_report = QGroupBox("📝 AI Report Settings")
-        # Removed inline style: grp_report.setStyleSheet(grp_detect.styleSheet())
+        # Report Group
+        grp_report = QGroupBox("📝 Reporting")
         layout_report = QVBoxLayout(grp_report)
-
-        # Auto Checkbox
-        self.chk_auto_report = QCheckBox("Auto-Generate Report")
-        self.chk_auto_report.setToolTip("Automatically generate AI report after video analysis finishes")
-        layout_report.addWidget(self.chk_auto_report)
-
-        # AI Model Selector
-        lbl_ai = QLabel("AI Model Providers:")
+        self.chk_auto_report = QCheckBox("Auto-Generate")
         self.scan_ai_combo = QComboBox()
-        self.scan_ai_combo.addItems(["Gemini Cloud AI", "Local LLM (Coming Soon)", "None"])
-        layout_report.addWidget(lbl_ai)
+        self.scan_ai_combo.addItems(["Gemini Cloud", "None"])
+        layout_report.addWidget(self.chk_auto_report)
         layout_report.addWidget(self.scan_ai_combo)
-
-        layout_right.addWidget(grp_report)
-        
-        # Action Buttons
-        self.btn_analyze = QPushButton("⚡ Start Analysis")
-        self.btn_analyze.setEnabled(False)
-        self.btn_analyze.setMinimumHeight(45)
-        self.btn_analyze.setStyleSheet("""
-            QPushButton { background-color: #10b981; color: white; font-weight: bold; border-radius: 6px; }
-            QPushButton:disabled { background-color: #333; color: #555; }
-            QPushButton:hover { background-color: #059669; }
-        """)
-        self.btn_analyze.clicked.connect(self.start_analysis)
-        layout_right.addWidget(self.btn_analyze)
         
         # Manual Report Button
-        self.btn_analyst_report = QPushButton("📝 Generate Report")
-        self.btn_analyst_report.setEnabled(False)
+        self.btn_analyst_report = QPushButton("Generate Report Now")
         self.btn_analyst_report.clicked.connect(lambda: self.manual_report_generation()) 
-        self.btn_analyst_report.setStyleSheet("background: #d97706; border: 1px solid #b45309; padding: 10px; color: white;")
-        layout_right.addWidget(self.btn_analyst_report)
+        self.btn_analyst_report.setEnabled(False)
+        layout_report.addWidget(self.btn_analyst_report)
         
-        # View Report Button (Hidden initially)
-        self.btn_view_report = QPushButton("📄 View Last Report")
-        self.btn_view_report.hide()
-        self.btn_view_report.clicked.connect(self.view_last_report)
-        self.btn_view_report.setStyleSheet("background: #3b82f6; border: 1px solid #2563eb; padding: 10px; color: white;")
-        layout_right.addWidget(self.btn_view_report)
+        # View Report Button (New)
+        self.btn_view_report = QPushButton("View Existing Report")
+        self.btn_view_report.clicked.connect(lambda: self.view_current_report())
+        self.btn_view_report.setEnabled(False) # Hidden/Disabled by default
+        self.btn_view_report.setStyleSheet("background-color: #6366f1; color: white;")
+        layout_report.addWidget(self.btn_view_report)
         
-        # Progress Bar / Status
+        layout_right_wrapper.addWidget(grp_report)
+        
+        # Start Button
+        self.btn_analyze = QPushButton("⚡ Start Batch Analysis")
+        self.btn_analyze.setMinimumHeight(50)
+        self.btn_analyze.setStyleSheet("background-color: #10b981; color: white; font-weight: bold; font-size: 14px;")
+        self.btn_analyze.setEnabled(False)
+        self.btn_analyze.clicked.connect(self.start_analysis)
+        layout_right_wrapper.addWidget(self.btn_analyze)
+
+        # Status Label
         self.lbl_status_analyst = QLabel("Ready")
         self.lbl_status_analyst.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_status_analyst.setObjectName("lblAnalystStatus") 
-        layout_right.addWidget(self.lbl_status_analyst)
+        layout_right_wrapper.addWidget(self.lbl_status_analyst)
         
-        layout_right.addStretch()
+        layout_right_wrapper.addStretch()
         
-        layout.addWidget(container_left, 70) 
-        layout.addWidget(container_right_wrapper, 30)
+        # --- PROGRESS BAR (Bottom Right) ---
+        self.lbl_processing_file = QLabel("")
+        self.lbl_processing_file.setStyleSheet("color: #aaa; font-size: 11px;")
+        self.lbl_processing_file.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        self.lbl_analyst_loading = QLabel("0%")
+        self.lbl_analyst_loading.setStyleSheet("color: #3b82f6; font-weight: bold;")
+        self.lbl_analyst_loading.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        self.analyst_progress = QProgressBar()
+        self.analyst_progress.setFixedHeight(8)
+        self.analyst_progress.setTextVisible(False)
+        self.analyst_progress.setStyleSheet("QProgressBar::chunk { background: #3b82f6; }")
+        
+        layout_right_wrapper.addWidget(self.lbl_processing_file)
+        layout_right_wrapper.addWidget(self.lbl_analyst_loading)
+        layout_right_wrapper.addWidget(self.analyst_progress)
+        
+        content_layout.addWidget(container_right_wrapper, 25)
+        
+        main_layout.addLayout(content_layout)
 
     def on_snapshot_click(self, label):
         """Handle click on analyst snapshot label"""
         path = label.property("file_path")
         if path and os.path.exists(path):
-            self.show_image_dialog(path)
+            # Find index
+            start_idx = 0
+            if hasattr(self, 'snapshot_paths') and self.snapshot_paths:
+                try:
+                    start_idx = self.snapshot_paths.index(path)
+                except ValueError:
+                    start_idx = 0
+            
+            self.show_image_dialog(path, start_index=start_idx, all_paths=getattr(self, 'snapshot_paths', []))
 
     def setup_history_tab(self):
         layout = QVBoxLayout(self.tab_history)
@@ -727,7 +746,14 @@ class TrafficMonitorApp(QMainWindow):
             labels = ["Before", "During", "After"]
             
             # Resolve Data Directory
-            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+            # We check both Project Root and Client Local data folders
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(client_dir)
+            
+            data_dirs = [
+                os.path.join(project_root, "data"),       # Project Root Data (Live Detection default)
+                os.path.join(client_dir, "data"),         # Client Local Data (Analyst default)
+            ]
             
             for i, path_url in enumerate(snapshot_urls):
                 if i >= 3: break
@@ -743,15 +769,22 @@ class TrafficMonitorApp(QMainWindow):
                 # Path Resolution Logic
                 local_path = None
                 if isinstance(path_url, str):
-                    if path_url.startswith("/api"):
-                        # It's a URL from backend, look for filename in local data folder
-                        filename = path_url.split("/")[-1]
-                        local_path = os.path.join(data_dir, filename)
-                    elif os.path.isabs(path_url):
-                        local_path = path_url
-                    else:
-                        local_path = os.path.join(data_dir, os.path.basename(path_url))
-                
+                    candidates = []
+                    fname = os.path.basename(path_url)
+                    
+                    # 1. Check in all known data directories
+                    for d in data_dirs:
+                        candidates.append(os.path.join(d, fname))
+                        candidates.append(os.path.join(d, "snapshots", fname)) # Just in case
+                    
+                    # 2. Absolute path fallback
+                    if os.path.isabs(path_url): candidates.append(path_url)
+                    
+                    for p in candidates:
+                        if os.path.exists(p):
+                            local_path = p
+                            break
+                            
                 if local_path and os.path.exists(local_path):
                      img_lbl.setPixmap(QPixmap(local_path))
                 else:
@@ -773,7 +806,6 @@ class TrafficMonitorApp(QMainWindow):
 
         # --- Video Replay ---
         # Note: Backend might send 'videoUrl' or 'imageUrl' (legacy)
-        # We check both or specific field.
         raw_video = incident.get('videoUrl') # Use videoUrl first
         if not raw_video:
              raw_video = incident.get('imageUrl') if str(incident.get('imageUrl')).endswith('.mp4') else None
@@ -781,18 +813,46 @@ class TrafficMonitorApp(QMainWindow):
         btn_video = QPushButton("🎬 Play Incident Video")
         btn_video.setStyleSheet("background-color: #3b82f6; color: white; font-weight: bold; padding: 8px; border-radius: 4px;")
         
+        local_vid_path = None
         if raw_video and isinstance(raw_video, str):
              # Resolve video path similarly
              vid_name = raw_video.split("/")[-1]
-             local_vid_path = os.path.join(data_dir, vid_name)
              
-             if os.path.exists(local_vid_path):
-                btn_video.setEnabled(True)
-                btn_video.clicked.connect(lambda: self.show_video_player(local_vid_path))
-             else:
-                btn_video.setText(f"🎬 Video Not Found")
-                btn_video.setEnabled(False)
-                btn_video.setStyleSheet("background-color: #555; color: #aaa; padding: 8px;")
+             # Check multiple locations
+             # Check multiple locations using data_dirs
+             candidates = []
+             for d in data_dirs:
+                 candidates.append(os.path.join(d, vid_name))
+                 candidates.append(os.path.join(d, "analyst_output", vid_name))
+             
+             for p in candidates:
+                 # self.log(f"🔎 Checking video candidate: {p}") # Debug log
+                 if os.path.exists(p):
+                     local_vid_path = p
+                     break
+        
+        if local_vid_path:
+             btn_video.setEnabled(True)
+             
+             # Popup Video Player Logic inside closure
+             def open_popup_player():
+                 from PyQt6.QtWidgets import QDialog, QVBoxLayout
+                 from widgets.video_player import VideoPlayerWidget
+                 
+                 vd = QDialog(self)
+                 vd.setWindowTitle(f"🎬 Replay: {os.path.basename(local_vid_path)}")
+                 vd.resize(900, 600)
+                 vl = QVBoxLayout(vd)
+                 vl.setContentsMargins(0,0,0,0)
+                 
+                 player = VideoPlayerWidget(local_vid_path)
+                 player.toggle_play() # Auto-play
+                 vl.addWidget(player)
+                 
+                 vd.exec()
+                 
+             btn_video.clicked.connect(open_popup_player)
+             
         else:
              btn_video.setText("🎬 Video Not Available")
              btn_video.setEnabled(False)
@@ -871,6 +931,10 @@ class TrafficMonitorApp(QMainWindow):
             # Update UI to show video is selected
             self.image_label.setText(f"🎬 Ready to Play: {os.path.basename(file_name)}\nClick 'Start Detection' to begin")
             self.image_label.setStyleSheet("background: #1a1a1a; border: 2px solid #3b82f6; border-radius: 8px; color: #3b82f6; font-size: 18px; font-weight: bold;")
+            
+            # Enable "Play Only" button
+            if hasattr(self, 'btn_play_only'):
+                self.btn_play_only.setEnabled(True)
 
     def start_detection(self):
         # Determine model path based on combo box selection
@@ -897,7 +961,8 @@ class TrafficMonitorApp(QMainWindow):
             self.log(f"Processing File: {self.source}")
         
         conf_threshold = self.slider_conf.value() / 100.0
-        self.thread = DetectionThread(model_path=model_path, source=self.source, save_path=self.output_path, conf_threshold=conf_threshold)
+        conf_threshold = self.slider_conf.value() / 100.0
+        self.thread = DetectionThread(model_path=model_path, source=self.source, save_path=self.output_path, conf_threshold=conf_threshold, loop=True)
         self.thread.change_pixmap_signal.connect(self.update_image)
         self.thread.detection_signal.connect(self.handle_detection)
         self.thread.snapshot_saved.connect(self.display_snapshots)  # NEW: Connect snapshot signal
@@ -990,115 +1055,220 @@ class TrafficMonitorApp(QMainWindow):
         # Optional: Log or just ignore since we wait for finish
         pass 
 
+    def select_analyst_video(self):
+        """Select multiple videos for batch analysis"""
+        # 1. CLEANUP PREVIOUS RUN
+        if hasattr(self, 'analyst_thread') and self.analyst_thread and self.analyst_thread.isRunning():
+            self.analyst_thread.stop()
+            self.analyst_thread.wait()
+            self.log("⏹️ Stopped previous analysis.")
+
+        # 2. SELECT FILES
+        file_names, _ = QFileDialog.getOpenFileNames(
+            self, 
+            "Select Videos for Analysis", 
+            "", 
+            "Video Files (*.mp4 *.avi *.mkv *.mov)"
+        )
+
+        
+        if file_names:
+            # RESET/OVERWRITE QUEUE
+            self.analyst_queue = file_names
+            self.current_batch_index = 0
+            self.analyst_results = []
+            
+            # --- CLEAR LIST WIDGET (Don't populate yet) ---
+            self.list_analyst_results.clear()
+
+            
+            # Update UI Info
+            count = len(file_names)
+            msg = f"queue: {count} files"
+            self.lbl_selected_file.setText(msg)
+            self.log(f"✅ Batch queue loaded: {count} files")
+            
+            self.btn_analyze.setEnabled(True)
+            self.btn_analyze.setText("⚡ Start Batch Analysis")
+            
+            # Reset views
+            if hasattr(self, 'analyst_snapshot_group'): self.analyst_snapshot_group.hide()
+            if hasattr(self, 'analyst_loading_container'): self.analyst_loading_container.hide()
+
     def start_analysis(self):
-        """Start analysis with selected file and settings"""
-        if not hasattr(self, 'analyst_file_path') or not self.analyst_file_path:
+        """Start batch analysis"""
+        if not hasattr(self, 'analyst_queue') or not self.analyst_queue:
             return
             
-        # Get settings from NEW UI controls
+        self.btn_analyze.setEnabled(False)
+        self.btn_analyze.setText("⏳ Processing Batch...")
+        self.analyst_results = [] # Clear previous results
+        self.current_batch_index = 0
+        
+        self.process_next_in_queue()
+
+    def process_next_in_queue(self):
+        """Process the next video in the queue"""
+        if self.current_batch_index >= len(self.analyst_queue):
+            self.on_batch_finished()
+            return
+            
+        current_file = self.analyst_queue[self.current_batch_index]
+        current_file = self.analyst_queue[self.current_batch_index]
+        self.lbl_status_analyst.setText(f"Processing {self.current_batch_index + 1}/{len(self.analyst_queue)}: {os.path.basename(current_file)}")
+        
+        # Update center label text (truncated if needed)
+        f_name = os.path.basename(current_file)
+        if len(f_name) > 40: f_name = f_name[:37] + "..."
+        self.lbl_processing_file.setText(f"Processing: {f_name}")
+        
+        # Get settings
         model_path = self.scan_model_combo.currentText().strip()
         conf_threshold = self.scan_conf_slider.value() / 100.0
         
-        self.btn_analyze.setEnabled(False)
-        self.btn_analyze.setText("⏳ Analyzing...")
-        self.lbl_status_analyst.setText("Starting Analysis...")
-        self.lbl_status_analyst.setStyleSheet("color: #fbbf24;")
+        # Clear UI for new processing
+        # Clear UI for new processing
+        if self.current_batch_index == 0:
+            self.analyst_stack.setCurrentIndex(1)
+            # if hasattr(self, 'analyst_snapshot_group'): self.analyst_snapshot_group.hide() # Optional, maybe keep visible
+
         
-        # Clear previous results (Optional, since group is hidden, but good for reset)
-        if hasattr(self, 'lbl_analyst_res_before'):
-            self.lbl_analyst_res_before.setText("Waiting...")
-            self.lbl_analyst_res_before.setPixmap(QPixmap())
-        
-        # UI: Switch to Progress View
-        self.analyst_stack.setCurrentIndex(1)
-        self.analyst_loading_container.show()
-        if hasattr(self, 'analyst_snapshot_group'): 
-             self.analyst_snapshot_group.hide() # Hide results during processing
-        
-        # Cleanup Player Stack Page if needed
-        for i in range(self.analyst_player_layout.count()):
-             item = self.analyst_player_layout.itemAt(i)
-             if item.widget() and item.widget() != self.analyst_loading_container:
-                 item.widget().deleteLater()
-                 
-        if self.analyst_loading_container.parent() is None:
-             self.analyst_player_layout.addWidget(self.analyst_loading_container)
-        
-        # Generate Output Path
-        output_dir = "data/analyst_output"
+        # Generate Output Path (Force Project Root)
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(client_dir)
+        output_dir = os.path.join(project_root, "data", "analyst_output")
         os.makedirs(output_dir, exist_ok=True)
         timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_HHmmss")
-        save_path = f"{output_dir}/analyst_{timestamp}.mp4"
+        # Unique name per file
+        base_name = os.path.splitext(os.path.basename(current_file))[0]
+        save_path = f"{output_dir}/analyst_{base_name}_{timestamp}.mp4"
         
-        # Start Thread
         self.analyst_thread = DetectionThread(
-            source=self.analyst_file_path,
+            source=current_file,
             model_path=model_path,
             conf_threshold=conf_threshold,
-            save_path=save_path
+            save_path=save_path,
+            loop=False # Analyst mode: No looping
         )
-        # NO Live Preview Connection
-        # self.analyst_thread.change_pixmap_signal.connect(self.update_analyst_preview)
         
         self.analyst_thread.progress_signal.connect(self.update_analyst_progress)
-        self.analyst_thread.detection_signal.connect(self.handle_analyst_detection)
-        self.analyst_thread.process_finished_signal.connect(self.on_analyst_finished)
+        # We don't connect detection_signal to UI to avoid spamming
+        self.analyst_thread.process_finished_signal.connect(self.on_single_file_finished)
         self.analyst_thread.start()
 
-    def on_analyst_finished(self, result_data):
-        """Called when analysis is 100% done"""
+    def on_single_file_finished(self, result_data):
+        """Called when ONE file is done"""
+        # Store result
+        result_data['original_file'] = self.analyst_queue[self.current_batch_index]
+        self.analyst_results.append(result_data)
+        
+        # --- ADD TO LIST (Finished) ---
+        f_name = os.path.basename(self.analyst_queue[self.current_batch_index])
+        item = QListWidgetItem(f"✅ {f_name}")
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked)
+        self.list_analyst_results.addItem(item)
+        self.list_analyst_results.scrollToItem(item)
+
+            
+        # SHOW RESULT IMMEDIATELY
+        current_result_idx = len(self.analyst_results) - 1
+        self.show_batch_result(current_result_idx)
+        
+        # Move to next
+        self.current_batch_index += 1
+        self.process_next_in_queue()
+
+    def on_result_list_clicked(self, item):
+        """Handle click on result list item"""
+        row = self.list_analyst_results.row(item)
+        # Check if result exists for this row
+        if row < len(self.analyst_results):
+            self.show_batch_result(row)
+        else:
+            self.log("⚠️ This video has not been processed yet.")
+
+    def on_batch_finished(self):
+        """Called when ALL files are done"""
         self.btn_analyze.setEnabled(True)
         self.btn_analyze.setText("⚡ Start Analysis")
-        self.lbl_status_analyst.setText("✅ Analysis Complete.")
+        self.lbl_status_analyst.setText("✅ Batch Complete.")
         self.lbl_status_analyst.setStyleSheet("color: #10b981;")
         
-        # Hide Progress (Check existence first)
         if hasattr(self, 'analyst_loading_container'):
-             self.analyst_loading_container.hide()
+             pass # Removed
+
              
-        # Extract Results
-        output_path = result_data.get('output_path')
-        result_snapshots = result_data.get('snapshots', [])
-        incident_id = result_data.get('incident_id')
+        # Auto-select the first one
+        if self.list_analyst_results.count() > 0:
+            self.list_analyst_results.setCurrentRow(0)
+            self.on_result_list_clicked(self.list_analyst_results.item(0))
+            
+    def show_batch_result(self, index):
+        """Display result for a specific index in the completed batch"""
+        if index < 0 or index >= len(self.analyst_results): return
         
-        # 1. SHOW PROCESSED VIDEO
+        result = self.analyst_results[index]
+        output_path = result.get('output_path')
+        snapshots = result.get('snapshots', [])
+        
+        # 1. Update Buttons (REMOVED - Using List)
+        
+        # 2. Show Video
         if output_path and os.path.exists(output_path):
              self.show_analyst_player(output_path)
-             self.output_path = output_path 
+             # self.lbl_selected_file.setText(...) # Don't overwrite global status
              
-        # 2. SHOW SNAPSHOTS (Bottom)
-        self.snapshot_paths = result_snapshots 
-        
-        # Map snapshots to labels: Before, During, After
-        # Ensure we have enough snapshots or pad
-        while len(result_snapshots) < 3: result_snapshots.append(None)
+        # 3. Show Snapshots
+        self.snapshot_paths = snapshots # Update for manual report
+        while len(snapshots) < 3: snapshots.append(None)
         
         pairs = [
-            (result_snapshots[0], self.lbl_analyst_res_before),
-            (result_snapshots[1], self.lbl_analyst_res_during),
-            (result_snapshots[2], self.lbl_analyst_res_after)
+            (snapshots[0], self.lbl_analyst_res_before),
+            (snapshots[1], self.lbl_analyst_res_during),
+            (snapshots[2], self.lbl_analyst_res_after)
         ]
         
         for path, lbl in pairs:
             if path and os.path.exists(path):
                 lbl.setPixmap(QPixmap(path).scaled(280, 160, Qt.AspectRatioMode.KeepAspectRatio))
-                lbl.setProperty("file_path", path) # Store path for click event
+                lbl.setProperty("file_path", path)
+            else:
+                lbl.clear()
+                lbl.setText("No Image")
                 
         if hasattr(self, 'analyst_snapshot_group'):
-            self.analyst_snapshot_group.show() 
-        
-        # Enable Manual Report
+            self.analyst_snapshot_group.show()
+            
+        # Enable report button for THIS video
         self.btn_analyst_report.setEnabled(True)
-        
-        # Handle Auto-Report
-        if self.chk_auto_report.isChecked():
-            # Trigger report generation worker
-            self.start_report_worker(result_snapshots, incident_id, output_path)
-
-        # Update button to call worker manually if not auto
+        # Disconnect old and connect new
         try: self.btn_analyst_report.clicked.disconnect() 
         except: pass
-        self.btn_analyst_report.clicked.connect(lambda: self.start_report_worker(result_snapshots, incident_id, output_path))
+        self.btn_analyst_report.clicked.connect(lambda: self.manual_report_generation())
+        
+        
+        # Store current params for report generation
+        # Fix: Use 'original_file' as common key (set in on_single_file_finished)
+        self.current_batch_params = {
+            'video_path': result.get('original_file'), # Key from on_single_file_finished
+            'snapshots': snapshots
+        }
+        
+        # Check if Report Exists and Toggle View Button
+        if result.get('report_data'):
+            self.btn_view_report.setEnabled(True)
+            inc_id = result['report_data'].get('incident_id', '?')
+            self.btn_view_report.setText(f"View Report (#{inc_id})")
+        else:
+            self.btn_view_report.setEnabled(False)
+            self.btn_view_report.setText(f"View Existing Report")
+
+    def navigate_batch(self, direction):
+        self.current_view_index += direction
+        self.show_batch_result(self.current_view_index)
+
+    # REMOVED OLD start_analysis, on_analyst_finished blocks as they are replaced above
 
     def start_report_worker(self, snapshots, incident_id, video_path):
         """Start the background report worker"""
@@ -1126,32 +1296,93 @@ class TrafficMonitorApp(QMainWindow):
             self.lbl_status_analyst.setText("⚠️ Report Failed")
             self.show_report_dialog(result.get('report', 'Error'), self.snapshot_paths)
 
-    def view_last_report(self):
-        """Re-open the last generated report"""
-        if hasattr(self, 'last_report_result') and self.last_report_result:
-            self.show_report_dialog(self.last_report_result, self.snapshot_paths)
+    def view_current_report(self):
+        """Re-open the report for the CURRENTLY selected video"""
+        if not hasattr(self, 'current_batch_params'): return
+        
+        # Find current result
+        vid_path = self.current_batch_params.get('video_path')
+        # Search in self.analyst_results
+        target_res = None
+        for res in self.analyst_results:
+             if res.get('original_file') == vid_path:
+                 target_res = res
+                 break
+        
+        if target_res and target_res.get('report_data'):
+            self.show_report_dialog(target_res['report_data']['report'], self.snapshot_paths)
+        else:
+            self.log("⚠️ No report found for this video.")
 
     def manual_report_generation(self):
-        """Manually trigger AI report for current snapshots"""
-        if not hasattr(self, 'snapshot_paths') or not all(self.snapshot_paths):
-            self.log("⚠️ No snapshots available to report on.")
+        """Manually trigger AI report for current snapshots (Threaded)"""
+        # Safer way to get paths
+        path_before = self.lbl_analyst_res_before.property("file_path")
+        path_during = self.lbl_analyst_res_during.property("file_path")
+        path_after = self.lbl_analyst_res_after.property("file_path")
+        
+        self.snapshot_paths = [path_before, path_during, path_after]
+        
+        # Check if we have valid snapshots
+        valid_snaps = [p for p in self.snapshot_paths if p and os.path.exists(p)]
+        if not valid_snaps:
+            self.log("⚠️ Need at least one snapshot for report")
             return
+            
+        current_vid = None
+        if hasattr(self, 'current_batch_params'):
+             original_path = self.current_batch_params.get('video_path')
+             # Look for processed path in results to send the annotated video
+             for res in self.analyst_results:
+                 if res.get('original_file') == original_path:
+                     current_vid = res.get('output_path')
+                     break
+             
+             # Fallback to original if not found
+             if not current_vid:
+                 current_vid = original_path
 
-        self.log("📝 Generating Manual Report...")
-        path_before, path_during, path_after = self.snapshot_paths
+        self.log("🤖 Generating AI Report... (Please wait)")
+        self.btn_analyst_report.setEnabled(False)
+        self.btn_analyst_report.setText("⏳ Generating...")
         
-        # Force select Gemini if it was on "No Report"
+        # Force select Gemini if needed
         if self.combo_ai_model.currentIndex() == 0:
-            self.combo_ai_model.setCurrentIndex(1) # Select Gemini
-            self.log("💡 Switched to Gemini model.")
-
-        incident_type = "vehicle accident"
-        result = self.report_generator.generate_report(
-            path_before, path_during, path_after, incident_type
-        )
+            self.combo_ai_model.setCurrentIndex(1)
         
+        # Use Thread
+        self.report_worker = ReportWorker(self.report_generator, self.snapshot_paths, None, current_vid)
+        self.report_worker.finished.connect(self.on_manual_report_finished)
+        self.report_worker.start()
+        
+    def on_manual_report_finished(self, result):
+        """Handle report completion"""
+        self.btn_analyst_report.setEnabled(True)
+        self.btn_analyst_report.setText("Generate Report Now")
+        
+        # Retrieve paths from member variable
+        path_before, path_during, path_after = [None, None, None]
+        if hasattr(self, 'snapshot_paths') and len(self.snapshot_paths) >= 3:
+             path_before, path_during, path_after = self.snapshot_paths[:3]
+        
+        # Store report logic duplicated from original method
         if result['success']:
             self.log(f"✅ AI Report generated! Incident ID: {result['incident_id']}")
+            
+            # SAVE REPORT TO RESULT OBJECT
+            # We need to find which result object this corresponds to
+            # Usually self.current_batch_params holds current video info
+            if hasattr(self, 'current_batch_params'):
+                current_vid = self.current_batch_params.get('video_path')
+                for res in self.analyst_results:
+                    if res.get('original_file') == current_vid:
+                        res['report_data'] = result
+                        break
+            
+            # Update UI buttons immediately
+            self.btn_view_report.setEnabled(True)
+            self.btn_view_report.setText(f"View Report (#{result['incident_id']})")
+            
             self.show_report_dialog(result['report'], [path_before, path_during, path_after])
         else:
             self.log(f"⚠️ Report error: {result['report']}")
@@ -1226,44 +1457,116 @@ class TrafficMonitorApp(QMainWindow):
         dialog.show()
         self.log("✅ Report dialog opened")
 
-    def show_image_dialog(self, image_path):
-        """Show full size image in a simple dialog"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea
-        from PyQt6.QtGui import QPixmap
-        from PyQt6.QtCore import Qt
+    def show_image_dialog(self, image_path, start_index=0, all_paths=None):
+        """Show full size image in an advanced dialog with navigation"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea, QHBoxLayout, QPushButton, QSizePolicy
+        from PyQt6.QtGui import QPixmap, QShortcut, QKeySequence
+        from PyQt6.QtCore import Qt, QEvent, QObject
         
         if not image_path or not os.path.exists(image_path):
             self.log("⚠️ Image path invalid")
             return
             
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"🔍 View Image: {os.path.basename(image_path)}")
+        dialog.setWindowTitle(f"🔍 View Image")
         dialog.resize(1000, 800)
+        # Make it frameless/translucent for 'lightbox' feel (Optional, but user asked for quick close)
+        # dialog.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        # dialog.setStyleSheet("background-color: rgba(0, 0, 0, 0.9); color: white;")
         
-        layout = QVBoxLayout(dialog)
+        # We stick to standard dialog but implement 'click outside image to close'
         
-        # Scroll Area for large images
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setContentsMargins(0,0,0,0)
+        
+        # Scroll Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        layout.addWidget(scroll)
+        scroll.setStyleSheet("background-color: #111; border: none;")
+        scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # Image Label
-        lbl = QLabel()
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setStyleSheet("background: #000;")
+        # Container for Image
+        img_container = QLabel()
+        img_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         
-        pixmap = QPixmap(image_path)
+        self.current_img_idx = start_index
+        self.gallery_paths = all_paths if all_paths else [image_path]
         
-        # Scale up if image is smaller than dialog view (approx 950x750)
-        view_w, view_h = 950, 750
-        if pixmap.width() < view_w or pixmap.height() < view_h:
-            pixmap = pixmap.scaled(view_w, view_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            
-        lbl.setPixmap(pixmap)
+        def update_view():
+            current_p = self.gallery_paths[self.current_img_idx]
+            if current_p and os.path.exists(current_p):
+                pix = QPixmap(current_p)
+                # Scale Logic
+                view_w, view_h = dialog.width() - 40, dialog.height() - 100
+                if pix.width() > view_w or pix.height() > view_h:
+                    pix = pix.scaled(view_w, view_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                img_container.setPixmap(pix)
+                dialog.setWindowTitle(f"🔍 View Image ({self.current_img_idx + 1}/{len(self.gallery_paths)})")
+            else:
+                img_container.setText("Image not found")
+
+        update_view()
+        scroll.setWidget(img_container)
+        main_layout.addWidget(scroll)
         
-        scroll.setWidget(lbl)
+        # Navigation Bar
+        nav_layout = QHBoxLayout()
+        nav_layout.setContentsMargins(20, 10, 20, 10)
         
-        dialog.show()
+        btn_prev = QPushButton("◀ Previous")
+        btn_prev.setStyleSheet("padding: 10px; font-weight: bold; background: #333; color: white;")
+        btn_next = QPushButton("Next ▶")
+        btn_next.setStyleSheet("padding: 10px; font-weight: bold; background: #333; color: white;")
+        
+        def go_prev():
+            if self.current_img_idx > 0:
+                self.current_img_idx -= 1
+                update_view()
+                
+        def go_next():
+            if self.current_img_idx < len(self.gallery_paths) - 1:
+                self.current_img_idx += 1
+                update_view()
+                
+        btn_prev.clicked.connect(go_prev)
+        btn_next.clicked.connect(go_next)
+        
+        nav_layout.addWidget(btn_prev)
+        nav_layout.addStretch()
+        
+        lbl_hint = QLabel("Click outside image or press ESC to close")
+        lbl_hint.setStyleSheet("color: #777;")
+        nav_layout.addWidget(lbl_hint)
+        
+        nav_layout.addStretch()
+        nav_layout.addWidget(btn_next)
+        
+        main_layout.addLayout(nav_layout)
+        
+        # Event Filter for 'Click Outside' behavior
+        # We interpret 'outside' as clicking the scroll area background
+        class ClickFilter(QObject):
+            def eventFilter(self, obj, event):
+                if obj == scroll and event.type() == QEvent.Type.MouseButtonPress:
+                    dialog.close()
+                    return True
+                if obj == img_container and event.type() == QEvent.Type.MouseButtonPress:
+                    # Optional: clicking image itself does nothing or zooms? 
+                    # User said "click outside". Standard: image click is safe.
+                    pass
+                return False
+                
+        self._filter = ClickFilter() # Keep reference
+        scroll.installEventFilter(self._filter) # Catch scroll bg clicks
+        # Note: scroll widget (image container) might block scroll clicks if it fills area.
+        # But we align center.
+        
+        # Shortcuts
+        QShortcut(QKeySequence("Left"), dialog).activated.connect(go_prev)
+        QShortcut(QKeySequence("Right"), dialog).activated.connect(go_next)
+        
+        dialog.exec()
     
     @pyqtSlot(str, str)
     def handle_detection(self, class_name, image_path):
@@ -1285,9 +1588,14 @@ class TrafficMonitorApp(QMainWindow):
         QApplication.processEvents() # Cập nhật UI ngay lập tức để không cảm giác bị treo
 
         idx = self.combo_model.currentIndex()
-        if idx == 0: model_path = 'model/small/best.pt'
-        elif idx == 1: model_path = 'model/medium/mediumv1.pt'
-        else: model_path = 'model/small/best.pt'  # Fallback
+        if idx == 0: 
+             model_path = 'model/small/best.pt'
+             self.log("Using Small v1 Model")
+        elif idx == 1: 
+             model_path = 'model/medium/mediumv1.pt'
+             self.log("Using Medium v1 Model")
+        else: 
+             model_path = 'model/small/best.pt'  # Fallback
         
         # SWITCH BACK TO LIVE VIEW (Page 0)
         self.stack_video.setCurrentIndex(0)
@@ -1345,6 +1653,16 @@ class TrafficMonitorApp(QMainWindow):
             
             self.log("🔄 Session reset. Ready for new detection.")
 
+    def play_video_only(self):
+        """Play selected video file without running AI detection"""
+        if self.source == 0 or not self.source:
+            self.log("⚠️ No video file selected.")
+            return
+
+        self.log(f"🎬 Playing video: {self.source}")
+        self.show_video_player(self.source)
+        self.status_bar.showMessage(f"🎬 Playing: {os.path.basename(str(self.source))}")
+
     def update_control_buttons(self, state):
         """Update button text/state based on app state: IDLE, RUNNING, PAUSED"""
         if state == "IDLE":
@@ -1386,32 +1704,25 @@ class TrafficMonitorApp(QMainWindow):
             self.is_dark_mode = True
             self.log("🌙 Switched to Dark Theme")
 
-    def select_analyst_video(self):
-        file, _ = QFileDialog.getOpenFileName(self, "Select Video", "", "Video Files (*.mp4 *.avi *.mkv)")
-        if file:
-            self.analyst_file_path = file
-            self.lbl_selected_file.setText(f"📄 {os.path.basename(file)}")
-            self.btn_analyze.setEnabled(True)
-            self.lbl_status_analyst.setText("Ready to process.")
-            
-            # SHOW RAW VIDEO
-            self.analyst_stack.setCurrentIndex(1) # Page 1 is Player Container
-            self.analyst_snapshot_group.hide() # Ensure results are hidden
-            
-            # Use VideoPlayerWidget to replay raw video
-            self.show_analyst_player(file)
+    # Removed duplicate select_analyst_video
+
 
     def show_analyst_player(self, video_path):
         from widgets.video_player import VideoPlayerWidget
-        # Clear previous player but KEEP loading container
+        # Clear previous player
         for i in range(self.analyst_player_layout.count()):
             item = self.analyst_player_layout.itemAt(i)
             widget = item.widget()
-            if widget and widget != self.analyst_loading_container:
+            if widget:
                 widget.deleteLater()
             
-        player = VideoPlayerWidget(video_path)
-        self.analyst_player_layout.addWidget(player)
+        self.player_widget = VideoPlayerWidget(video_path)
+        self.analyst_player_layout.addWidget(self.player_widget)
+        
+        # Auto-play REMOVED by user request
+        # self.player_widget.toggle_play()
+        
+        self.log(f"✅ Loaded player for: {os.path.basename(video_path)}")
 
     def get_light_theme(self):
         """Modern light theme stylesheet"""
