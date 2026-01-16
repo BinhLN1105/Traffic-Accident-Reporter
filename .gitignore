@@ -31,5 +31,4 @@ env/
 .gemini/
 
 # Remove commit git model over 100MB
-traffic-ai-client/model/medium/best.pt
 traffic-ai-client/model/medium/mediumv1.pt
