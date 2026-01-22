@@ -293,6 +293,11 @@ class TrafficMonitorApp(QMainWindow):
         ])
         ai_layout.addWidget(self.combo_ai_model)
         
+        # Checkbox for Auto-Report in Live Mode
+        self.chk_live_auto_report = QCheckBox("Auto-Generate Report")
+        self.chk_live_auto_report.setToolTip("Automatically generate AI report when accident is confirmed")
+        ai_layout.addWidget(self.chk_live_auto_report)
+        
         # NEW: Manual Report Button
         self.btn_manual_report = QPushButton("📄 Generate Report Now")
         self.btn_manual_report.setToolTip("Generate report for the currently displayed snapshots")
@@ -1175,6 +1180,40 @@ class TrafficMonitorApp(QMainWindow):
         current_result_idx = len(self.analyst_results) - 1
         self.show_batch_result(current_result_idx)
         
+        # --- AUTO REPORT LOGIC (ANALYST MODE) ---
+        if self.chk_auto_report.isChecked() and self.scan_ai_combo.currentIndex() == 0: # 0 is Gemini
+             self.log(f"🤖 Auto-generating report for {os.path.basename(self.analyst_queue[self.current_batch_index])}...")
+             
+             # Prepare params
+             snapshots = result_data.get('snapshots', [])
+             video_path = result_data.get('original_file') # Use original input
+             
+             # Run Worker
+             worker = ReportWorker(self.report_generator, snapshots, None, video_path)
+             
+             # Handle completion closure to update specific result
+             def handle_auto_report_done(res_report, target_vid=video_path):
+                 if res_report['success']:
+                     self.log(f"✅ Auto-Report Complete for {os.path.basename(target_vid)}")
+                     # Update result data
+                     for r in self.analyst_results:
+                         if r.get('original_file') == target_vid:
+                             r['report_data'] = res_report
+                             break
+                     # If currently viewing this one, update UI
+                     if hasattr(self, 'current_batch_params') and self.current_batch_params.get('video_path') == target_vid:
+                         self.btn_view_report.setEnabled(True)
+                         self.btn_view_report.setText(f"View Report (#{res_report['incident_id']})")
+                 else:
+                     self.log(f"⚠️ Auto-Report Failed: {res_report.get('report')}")
+
+             worker.finished.connect(handle_auto_report_done)
+             worker.start()
+             
+             # Keep reference to avoid GC
+             if not hasattr(self, 'auto_report_workers'): self.auto_report_workers = []
+             self.auto_report_workers.append(worker)
+        
         # Move to next
         self.current_batch_index += 1
         self.process_next_in_queue()
@@ -2009,9 +2048,12 @@ class TrafficMonitorApp(QMainWindow):
         # Enable Manual Report Button now that we have images
         self.btn_manual_report.setEnabled(True)
         
-        # DEFERRED: Do not generate report immediately. Wait for on_process_finished.
-        # This prevents spamming reports if multiple detections occur or if the first one is bad.
-        self.log("📸 Snapshots captured. Waiting for process completion to report.")
+        # --- AUTO REPORT LOGIC (LIVE MODE) ---
+        if self.chk_live_auto_report.isChecked() and self.combo_ai_model.currentIndex() > 0:
+            self.log("🤖 Auto-Reporting triggered! Generating AI Report...")
+            self.manual_report_generation()
+        else:
+            self.log("📸 Snapshots captured. (Check 'Auto-Generate' to auto-report)")
 
     def show_full_image(self, index):
         """Show full size image in a lightbox dialog"""
