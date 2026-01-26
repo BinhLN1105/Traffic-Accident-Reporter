@@ -60,8 +60,8 @@ class ReportWorker(QThread):
         
     def run(self):
         try:
-             # Pass incident_type="vehicle accident" explicitly
-             # Unpack snapshots list to match signature (before, during, after)
+             # Truyền incident_type="vehicle accident" rõ ràng
+             # Giải nén danh sách ảnh chụp để khớp với chữ ký hàm (trước, trong, sau)
              if len(self.snapshots) >= 3:
                  p1, p2, p3 = self.snapshots[:3]
                  result = self.generator.generate_report(p1, p2, p3, "vehicle accident", self.video_source)
@@ -78,7 +78,7 @@ class TrafficMonitorApp(QMainWindow):
         self.setWindowTitle("🚦 Smart Traffic Incident Reporter")
         self.setGeometry(50, 50, 1500, 950)  # Ensure window is large enough
         
-        # Apply modern dark theme
+        # Áp dụng giao diện tối
         self.setStyleSheet(self.get_dark_theme())
         
         # State variables
@@ -89,7 +89,7 @@ class TrafficMonitorApp(QMainWindow):
         self.api_client = APIClient()
         self.thread = None
         
-        # Initialize AI report generator with API client
+        # Khởi tạo bộ sinh báo cáo AI với API client
         from utils.report_generator import ReportGenerator
         self.report_generator = ReportGenerator(api_client=self.api_client)
         
@@ -105,9 +105,9 @@ class TrafficMonitorApp(QMainWindow):
         # Tab widget
         self.tabs = QTabWidget()
         
-        # Theme Toggle (Top Right Corner)
+        # Nút Chuyển Đổi Giao Diện (Góc Trên Phải)
         self.btn_theme = QPushButton("🌓")
-        self.btn_theme.setToolTip("Switch Theme (Light/Dark)")
+        self.btn_theme.setToolTip("Chuyển Đổi Giao Diện (Sáng/Tối)")
         self.btn_theme.clicked.connect(self.toggle_theme)
         self.btn_theme.setFixedSize(40, 30)
         self.btn_theme.setStyleSheet("border: none; font-size: 16px; background: transparent;")
@@ -117,7 +117,7 @@ class TrafficMonitorApp(QMainWindow):
         
         main_layout.addWidget(self.tabs)
         
-        # Tab 1: Live Detection
+        # Tab 1: Phát hiện Trực tiếp
         self.tab_live = QWidget()
         self.setup_live_tab()
         self.tabs.addTab(self.tab_live, "📹 Live Detection")
@@ -140,7 +140,7 @@ class TrafficMonitorApp(QMainWindow):
     def setup_live_tab(self):
         layout = QHBoxLayout(self.tab_live)
         
-        # --- LEFT SIDE: SCROLL AREA ---
+        # --- BÊN TRÁI: KHU VỰC CUỘN ---
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -152,7 +152,7 @@ class TrafficMonitorApp(QMainWindow):
         left_panel.setContentsMargins(0, 0, 10, 0) # Right margin for scrollbar
         left_panel.setSpacing(10)
         
-        # 1. Video Area (Stack: 0=Live Feed, 1=Replay Player)
+        # 1. Khu vực Video (Stack: 0=Luồng trực tiếp, 1=Trình phát lại)
         self.stack_video = QStackedWidget()
         self.stack_video.setMinimumSize(1000, 700)
         self.stack_video.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -164,7 +164,7 @@ class TrafficMonitorApp(QMainWindow):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stack_video.addWidget(self.image_label)
         
-        # Page 1: Placeholder for Video Player (Added dynamically)
+        # Trang 1: Chỗ giữ chỗ cho Trình phát video (Thêm động)
         self.replay_container = QWidget()
         self.replay_layout = QVBoxLayout(self.replay_container)
         self.replay_layout.setContentsMargins(0,0,0,0)
@@ -247,8 +247,8 @@ class TrafficMonitorApp(QMainWindow):
         right_panel = QVBoxLayout(right_container)
         right_panel.setContentsMargins(10, 0, 10, 0) # Padding for visual breathing room
         
-        # Source selection group
-        source_group = QGroupBox("📂 Video Source")
+        # Nhóm chọn nguồn
+        source_group = QGroupBox("📂 Nguồn Video")
         source_layout = QVBoxLayout()
         self.btn_select = QPushButton(" Select Video File")
         self.btn_select.clicked.connect(self.select_video)
@@ -256,8 +256,8 @@ class TrafficMonitorApp(QMainWindow):
         source_group.setLayout(source_layout)
         right_panel.addWidget(source_group)
         
-        # Model selection group
-        model_group = QGroupBox("🤖 AI Model")
+        # Nhóm chọn mô hình
+        model_group = QGroupBox("🤖 Mô Hình AI")
         model_layout = QVBoxLayout()
         self.combo_model = QComboBox()
         self.combo_model.addItems([
@@ -269,8 +269,8 @@ class TrafficMonitorApp(QMainWindow):
         model_group.setLayout(model_layout)
         right_panel.addWidget(model_group)
         
-        # Confidence slider
-        conf_group = QGroupBox("⚙️ Confidence Threshold")
+        # Thanh trượt độ tin cậy
+        conf_group = QGroupBox("⚙️ Ngưỡng Độ Tin Cậy")
         conf_layout = QVBoxLayout()
         self.lbl_conf = QLabel("Confidence: 0.70")
         self.slider_conf = QSlider(Qt.Orientation.Horizontal)
@@ -282,8 +282,8 @@ class TrafficMonitorApp(QMainWindow):
         conf_group.setLayout(conf_layout)
         right_panel.addWidget(conf_group)
         
-        # AI Report selection
-        ai_report_group = QGroupBox("📝 AI Report Generation")
+        # Chọn báo cáo AI
+        ai_report_group = QGroupBox("📝 Tạo Báo Cáo AI")
         ai_layout = QVBoxLayout()
         self.combo_ai_model = QComboBox()
         self.combo_ai_model.addItems([
@@ -298,10 +298,10 @@ class TrafficMonitorApp(QMainWindow):
         self.chk_live_auto_report.setToolTip("Automatically generate AI report when accident is confirmed")
         ai_layout.addWidget(self.chk_live_auto_report)
         
-        # NEW: Manual Report Button
-        self.btn_manual_report = QPushButton("📄 Generate Report Now")
-        self.btn_manual_report.setToolTip("Generate report for the currently displayed snapshots")
-        self.btn_manual_report.setEnabled(False) # Enabled only when snapshots exist
+        # MỚI: Nút Báo Cáo Thủ Công
+        self.btn_manual_report = QPushButton("📄 Tạo Báo Cáo Ngay")
+        self.btn_manual_report.setToolTip("Tạo báo cáo cho các ảnh chụp đang hiển thị")
+        self.btn_manual_report.setEnabled(False) # Chỉ kích hoạt khi có ảnh chụp
         self.btn_manual_report.clicked.connect(self.manual_report_generation)
         self.btn_manual_report.setStyleSheet("""
             QPushButton { background: #d97706; border: 1px solid #b45309; border-radius: 4px; color: white; padding: 6px; }
@@ -310,8 +310,8 @@ class TrafficMonitorApp(QMainWindow):
         """)
         ai_layout.addWidget(self.btn_manual_report)
         
-        # NEW: View Report Button (for viewing result after generation)
-        self.btn_view_report = QPushButton("👁️ View Latest Report")
+        # MỚI: Nút Xem Báo Cáo (để xem kết quả sau khi tạo)
+        self.btn_view_report = QPushButton("👁️ Xem Báo Cáo Mới Nhất")
         self.btn_view_report.setEnabled(False)
         self.btn_view_report.clicked.connect(lambda: self.show_report_dialog(
             self.last_report_text if hasattr(self, 'last_report_text') else "No Report", 
@@ -391,13 +391,13 @@ class TrafficMonitorApp(QMainWindow):
         main_layout = QVBoxLayout(self.tab_analyst)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # --- MAIN SPLIT VIEW (Vertical: Content / Snapshots) ---
+        # --- CHẾ ĐỘ CHIA ĐÔI CHÍNH (Dọc: Nội dung / Ảnh chụp) ---
         self.main_splitter = QSplitter(Qt.Orientation.Vertical)
         
         # 1. TOP SECTION (Horizontal: List / Player)
         self.top_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # A. Result List (Left)
+        # A. Danh sách kết quả (Trái)
         # ---------------------
         list_container = QWidget()
         list_layout = QVBoxLayout(list_container)
@@ -987,8 +987,9 @@ class TrafficMonitorApp(QMainWindow):
         self.update_control_buttons("IDLE")
         
         # --- LATE REPORT GENERATION ---
-        # Generate report only after video finishes to avoid partial results
-        if hasattr(self, 'snapshot_paths') and all(self.snapshot_paths) and self.combo_ai_model.currentIndex() > 0:
+        # Generate report only if we have ALL 3 snapshots (Strict Mode)
+        has_snaps = hasattr(self, 'snapshot_paths') and all(self.snapshot_paths)
+        if has_snaps and self.combo_ai_model.currentIndex() > 0:
              self.log("🤖 Video finished. Generating Final AI Report...")
              QApplication.processEvents()
              
@@ -1355,13 +1356,24 @@ class TrafficMonitorApp(QMainWindow):
 
     def manual_report_generation(self):
         """Manually trigger AI report for current snapshots (Threaded)"""
-        # Safer way to get paths
-        path_before = self.lbl_analyst_res_before.property("file_path")
-        path_during = self.lbl_analyst_res_during.property("file_path")
-        path_after = self.lbl_analyst_res_after.property("file_path")
+        # Determine context based on active tab
+        # 0 = Live, 1 = Analyst
+        current_tab_idx = self.tabs.currentIndex()
         
-        self.snapshot_paths = [path_before, path_during, path_after]
+        # Default to Live Mode paths (managed by display_snapshots)
+        live_paths = getattr(self, 'snapshot_paths', [None, None, None])
         
+        # If in Analyst Mode, override with Analyst Label paths
+        if current_tab_idx == 1:
+            path_before = self.lbl_analyst_res_before.property("file_path")
+            path_during = self.lbl_analyst_res_during.property("file_path")
+            path_after = self.lbl_analyst_res_after.property("file_path")
+            self.snapshot_paths = [path_before, path_during, path_after]
+        elif current_tab_idx == 0:
+             # In Live Mode, self.snapshot_paths is already set by display_snapshots
+             # Just ensure it's not None
+             if not self.snapshot_paths: self.snapshot_paths = [None, None, None]
+
         # Check if we have valid snapshots
         valid_snaps = [p for p in self.snapshot_paths if p and os.path.exists(p)]
         if not valid_snaps:
@@ -1369,17 +1381,19 @@ class TrafficMonitorApp(QMainWindow):
             return
             
         current_vid = None
-        if hasattr(self, 'current_batch_params'):
-             original_path = self.current_batch_params.get('video_path')
-             # Look for processed path in results to send the annotated video
-             for res in self.analyst_results:
-                 if res.get('original_file') == original_path:
-                     current_vid = res.get('output_path')
-                     break
-             
-             # Fallback to original if not found
-             if not current_vid:
-                 current_vid = original_path
+        
+        # Logic to find video depends on Tab
+        if current_tab_idx == 1: # Analyst
+            if hasattr(self, 'current_batch_params'):
+                 original_path = self.current_batch_params.get('video_path')
+                 # Look for processed path in results to send the annotated video
+                 for res in self.analyst_results:
+                     if res.get('original_file') == original_path:
+                         current_vid = res.get('output_path')
+                         break
+                 if not current_vid: current_vid = original_path
+        else: # Live
+             current_vid = self.output_path # Use the recording/processing path
 
         self.log("🤖 Generating AI Report... (Please wait)")
         self.btn_analyst_report.setEnabled(False)
@@ -2026,8 +2040,6 @@ class TrafficMonitorApp(QMainWindow):
     @pyqtSlot(str, str, str)
     def display_snapshots(self, path_before, path_during, path_after):
         """Display the 3 captured snapshots in gallery"""
-        self.log(f"📸 Snapshots captured!")
-        
         # Store paths for zoom functionality
         self.snapshot_paths = [path_before, path_during, path_after]
         
@@ -2041,19 +2053,25 @@ class TrafficMonitorApp(QMainWindow):
                 pixmap = QPixmap(path)
                 label.setPixmap(pixmap)
                 label.setText("")  # Clear placeholder text
+            elif path is None:
+                # Still waiting for this image
+                label.setText("Waiting...")
             else:
                 label.setText("Error")
-                self.log(f"⚠️ Image not found: {path}")
         
         # Enable Manual Report Button now that we have images
         self.btn_manual_report.setEnabled(True)
         
         # --- AUTO REPORT LOGIC (LIVE MODE) ---
         if self.chk_live_auto_report.isChecked() and self.combo_ai_model.currentIndex() > 0:
-            self.log("🤖 Auto-Reporting triggered! Generating AI Report...")
-            self.manual_report_generation()
+            # STRICT CHECK: Only report if we have ALL 3 images (Before, During, After)
+            if path_before and path_during and path_after:
+                self.log("🤖 3 Snapshots Ready! Auto-Reporting triggered...")
+                self.manual_report_generation()
+            else:
+                self.log("⏳ Snapshots updated. Waiting for final frame to report...")
         else:
-            self.log("📸 Snapshots captured. (Check 'Auto-Generate' to auto-report)")
+            self.log("📸 Snapshots captured.")
 
     def show_full_image(self, index):
         """Show full size image in a lightbox dialog"""

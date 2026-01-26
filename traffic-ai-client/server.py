@@ -20,7 +20,7 @@ from av import VideoFrame
 app = Flask(__name__)
 CORS(app)
 
-# Setup Logger
+# Thiết lập ghi log
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
@@ -38,8 +38,8 @@ print(f"Stream Data Root: {STREAM_DATA_ROOT}")
 
 def get_model(model_type="medium"):
     """
-    Retrieves the requested YOLO model, loading it if necessary.
-    Defaults to 'medium' if model_type is invalid or not specified.
+    Lấy mô hình YOLO được yêu cầu, tải nó nếu cần thiết.
+    Mặc định là 'medium' nếu model_type không hợp lệ hoặc không được chỉ định.
     """
     model_type = str(model_type).lower()
     if model_type not in MODEL_PATHS:
@@ -53,15 +53,15 @@ def get_model(model_type="medium"):
     
     return MODELS[model_type]
 
-# Initialize default model
+# Khởi tạo mô hình mặc định
 get_model("medium")
 
-# Job Store
+# Kho lưu trữ thông tin công việc (Job Store)
 jobs = {}
 pcs = set()
 
 # --- BATCH WORKER ---
-# --- BATCH WORKER ---
+# --- XỬ LÝ BATCH (HÀNG LOẠT) ---
 from collections import deque
 import datetime
 
@@ -69,7 +69,7 @@ def draw_styled_box(img, x1, y1, x2, y2, label, conf, color):
     # Box
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
     
-    # Label with background
+    # Nhãn có nền
     text = f"{label} {conf:.2f}"
     font_scale = 0.8
     thickness = 2
@@ -87,7 +87,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
     try:
         jobs[job_id]['status'] = 'PROCESSING'
         
-        # Parse custom labels
+        # Phân tích các nhãn tùy chỉnh
         target_labels = [l.strip().lower() for l in custom_labels.split(',') if l.strip()]
         print(f"[{job_id}] Target Labels: {target_labels} | Conf: {confidence_threshold}")
 
@@ -102,9 +102,9 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        # Output Video Config
+        # Cấu hình video đầu ra
         output_fps = fps if fps > 0 else 30.0
-        fourcc = cv2.VideoWriter_fourcc(*'VP80') # WebM format
+        fourcc = cv2.VideoWriter_fourcc(*'VP80') # Định dạng WebM
         out = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
 
         # --- CẤU HÌNH TỐI ƯU ---
@@ -116,7 +116,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         AFTER_SECONDS = 5.0
         BUFFER_SIZE = int(fps * BEFORE_SECONDS)
         
-        # Logic xác nhận tai nạn (Persistence Check)
+        # Xác thực tai nạn (Kiểm tra độ bền vững)
         ACCIDENT_DURATION_THRESHOLD = 0.5 
         CONFIRMATION_FRAMES = int(fps * ACCIDENT_DURATION_THRESHOLD)
         current_accident_streak = 0 
@@ -124,12 +124,13 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         frame_buffer = deque(maxlen=BUFFER_SIZE) 
         snapshot_state = 'SEARCHING'
         frames_since_incident = 0
-        snapshot_paths = [] # Current incident snapshots
-        all_snapshot_paths = [] # ALL incident snapshots (for frontend)
+        snapshot_paths = [] # Danh sách ảnh chụp sự cố hiện tại
+        all_snapshot_paths = [] # TẤT CẢ ảnh chụp sự cố (cho frontend)
         
         detected_accidents = []
         current_incident_info = None
         incidents = []
+        all_reports = [] # Lưu trữ tất cả báo cáo AI
         
         # Tạo thư mục data nếu chưa có
         DATA_DIR = os.path.dirname(output_path)
@@ -137,24 +138,45 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         
         frame_count = 0
         
+        # Theo dõi phương án dự phòng (Fallback)
+        best_fallback_conf = 0.0
+        best_fallback_data = None # (nhãn, frame_trước, frame_trong)
+        
         while cap.isOpened():
             ret, frame = cap.read() # Chỉ giữ 1 dòng read
             
             if not ret:
                 print(f"[{job_id}] End of video stream.")
+                # BẮT BUỘC CHỤP ẢNH HOÀN THÀNH NẾU ĐANG CHỜ
                 if snapshot_state == 'CAPTURING_AFTER':
+                    print(f"[{job_id}] Video ended before 'After' frame. Forcing capture.")
                     after_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_after.jpg")
-                    if frame_buffer:
-                        # Capture & Timestamp
-                        final_after = frame_buffer[-1].copy()
-                        add_timestamp(final_after, frame_count / fps)
-                        cv2.imwrite(after_path, final_after)
-                        
-                        snapshot_paths.append(after_path)
-                        all_snapshot_paths.append(after_path)
-                        # Gửi report sót lại nếu video kết thúc bất ngờ
-                        if auto_report and current_incident_info and len(snapshot_paths) >= 3:
-                             report_to_backend(snapshot_paths, current_incident_info['label'])
+                    
+                    # Chụp & Đóng dấu thời gian
+                    final_after = frame_buffer[-1].copy() if frame_buffer else (last_boxes[0] if last_boxes else None) # Dự phòng lấy cái gì đó
+                    if final_after is None: # Trường hợp cực đoan
+                         final_after = np.zeros((height, width, 3), dtype=np.uint8)
+
+                    add_timestamp(final_after, frame_count / fps)
+                    cv2.imwrite(after_path, final_after)
+                    
+                    snapshot_paths.append(after_path)
+                    all_snapshot_paths.append(after_path)
+                    
+                    # reports_data = [] # REMOVED local init
+                    # REPORT NGAY LẬP TỨC
+                    if auto_report and current_incident_info:
+                        report_result = report_to_backend(snapshot_paths, current_incident_info['label'], output_path)
+                        if report_result:
+                            all_reports.append(report_result)
+                            current_incident_info['aiReport'] = report_result.get('aiReport')
+                            
+                    detected_accidents.append({
+                        "timestamp": current_incident_info['time'],
+                        "label": current_incident_info['label'],
+                        "snapshots": list(snapshot_paths)
+                    })
+
                 break
             
             frame_buffer.append(frame.copy())
@@ -185,6 +207,25 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                                 detection_found_in_this_frame = True
                                 current_frame_label = label
                                 current_frame_conf = conf
+                                
+                                # Update Fallback Candidate
+                                if conf > best_fallback_conf:
+                                    best_fallback_conf = conf
+                                    fb_before = frame_buffer[0].copy() if frame_buffer else frame.copy()
+                                    
+                                    # LOGIC TUA NGƯỢC CHO CẢ DỰ PHÒNG
+                                    # Ngay cả khi dự phòng, chúng ta muốn khung hình từ 1.5s trước đó nếu có thể
+                                    f_rewind_s = 1.5
+                                    f_frames_back = int(fps * f_rewind_s)
+                                    if len(frame_buffer) > f_frames_back:
+                                        fb_during = frame_buffer[-f_frames_back].copy()
+                                    elif frame_buffer:
+                                        fb_during = frame_buffer[0].copy()
+                                    else:
+                                        fb_during = frame.copy()
+                                        
+                                    best_fallback_data = (label, fb_before, fb_during)
+
             else:
                 # Dùng lại kết quả từ cache (Skip frame)
                 for box_data in last_boxes:
@@ -194,7 +235,6 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                         current_frame_label = label
                         current_frame_conf = conf
 
-            # --- VẼ HÌNH ---
             # --- VẼ HÌNH ---
             annotated_frame = frame.copy()
             
@@ -221,7 +261,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                         print(f"[{job_id}] 🚨 Accident CONFIRMED (Streak: {current_accident_streak}), capturing...")
                         current_incident_info = incidents[-1]
                         
-                        # 1. Save BEFORE
+                        # 1. Lưu TRƯỚC (BEFORE)
                         before_frame = frame_buffer[0].copy() if frame_buffer else frame.copy()
                         add_timestamp(before_frame, (frame_count - len(frame_buffer)) / fps if frame_buffer else frame_count/fps)
                         before_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_before.jpg")
@@ -229,8 +269,18 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                         snapshot_paths = [before_path] # Reset for new incident
                         all_snapshot_paths.append(before_path)
                         
-                        # 2. Save DURING
-                        during_frame = frame.copy()
+                        # 2. Lưu TRONG KHI (DURING) - (LOGIC TUA NGƯỢC)
+                        # Thay vì lấy frame hiện tại, quay lại 0.5s để bắt khoảnh khắc va chạm
+                        SECONDS_TO_REWIND = 0.5  
+                        frames_back = int(fps * SECONDS_TO_REWIND)
+                        
+                        if len(frame_buffer) > frames_back:
+                            during_frame = frame_buffer[-frames_back].copy()
+                        elif frame_buffer:
+                             during_frame = frame_buffer[0].copy()
+                        else:
+                             during_frame = frame.copy()
+
                         add_timestamp(during_frame, frame_count / fps)
                         during_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_during.jpg")
                         cv2.imwrite(during_path, during_frame)
@@ -254,11 +304,11 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
             # --- XỬ LÝ CHỤP ẢNH SAU & BÁO CÁO ---
             if snapshot_state == 'CAPTURING_AFTER':
                 frames_since_incident += 1
-                if frames_since_incident >= (fps * AFTER_SECONDS): # Capture After Configured Seconds
-                    # 3. Save AFTER
+                if frames_since_incident >= (fps * AFTER_SECONDS): # Chụp ảnh SAU theo cấu hình giây
+                    # 3. Lưu SAU (AFTER)
                     after_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_after.jpg")
                     
-                    # Timestamp After
+                    # Đóng dấu thời gian cho ảnh SAU
                     final_after = frame.copy()
                     add_timestamp(final_after, frame_count / fps)
                     
@@ -266,9 +316,14 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                     snapshot_paths.append(after_path)
                     all_snapshot_paths.append(after_path)
                     
+                    # reports_data = [] # REMOVED local init
                     # REPORT NGAY LẬP TỨC
                     if auto_report and current_incident_info:
-                        report_to_backend(snapshot_paths, current_incident_info['label'], output_path)
+                        report_result = report_to_backend(snapshot_paths, current_incident_info['label'], output_path)
+                        if report_result:
+                            all_reports.append(report_result)
+                            # Đính kèm vào thông tin sự cố để dự phòng
+                            current_incident_info['aiReport'] = report_result.get('aiReport')
                     
                     detected_accidents.append({
                         "timestamp": current_incident_info['time'],
@@ -297,12 +352,44 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         cap.release()
         out.release()
         
+        # --- FALLBACK LOGIC FOR SHORT VIDEOS ---
+        if not detected_accidents and best_fallback_data:
+             print(f"[{job_id}] ⚠️ No long incident. Using Fallback (Conf: {best_fallback_conf:.2f})")
+             fb_label, fb_before, fb_during = best_fallback_data
+             
+             # Save Fallback Images
+             f_before_path = os.path.join(DATA_DIR, f"{job_id}_fb_before.jpg")
+             cv2.imwrite(f_before_path, fb_before)
+             
+             f_during_path = os.path.join(DATA_DIR, f"{job_id}_fb_during.jpg")
+             cv2.imwrite(f_during_path, fb_during)
+             
+             # Use last known frame as after
+             f_after_path = os.path.join(DATA_DIR, f"{job_id}_fb_after.jpg")
+             last_fr = frame_buffer[-1] if frame_buffer else fb_during
+             cv2.imwrite(f_after_path, last_fr)
+             
+             fb_snapshots = [f_before_path, f_during_path, f_after_path]
+             all_snapshot_paths.extend(fb_snapshots)
+             
+             all_reports = [] # Use the global one if needed, but safe to just append if it exists
+             if auto_report:
+                  report_result = report_to_backend(fb_snapshots, fb_label, output_path)
+                  if report_result: all_reports.append(report_result)
+                  
+             detected_accidents.append({
+                 "timestamp": 0, "label": fb_label, "snapshots": fb_snapshots
+             })
+        
         # Save Metadata
         metadata = {
             "has_accident": len(detected_accidents) > 0, 
             "snapshot_paths": all_snapshot_paths, # Send ALL snapshots
             "detected_accidents": detected_accidents,
-            "incidents": incidents
+            "incidents": incidents,
+            # NEW: Single top-level report (using the first one if multiple)
+            "aiReport": all_reports[0]['aiReport'] if all_reports else None,
+            "incidentId": all_reports[0]['id'] if all_reports else None
         }
         json_path = output_path + ".json" 
         with open(json_path, 'w') as f:
@@ -350,12 +437,16 @@ def report_to_backend(snapshot_paths, label, video_path=None):
             f.close()
             
         if response.status_code == 200:
-            print("✅ Successfully reported to Backend. ID:", response.json().get('id'))
+            result = response.json()
+            print("✅ Successfully reported to Backend. ID:", result.get('id'))
+            return result
         else:
             print(f"❌ Backend Report Failed: {response.status_code} - {response.text}")
+            return None
             
     except Exception as e:
         print(f"❌ Error reporting to backend: {str(e)}")
+        return None
 
 
 # --- GLOBAL ASYNC LOOP SETUP (WEBRTC) ---
@@ -482,8 +573,17 @@ class YoloVideoTrack(VideoStreamTrack):
                        self.all_snapshot_paths.append(before_path)
                        self.all_snapshot_urls.append(f"/data/{os.path.basename(before_path)}")
                        
-                       # 2. Save DURING
-                       during_frame = frame.copy()
+                       # 2. Save DURING (REWIND LOGIC)
+                       # Instead of current frame, go back 0.5s to capture impact
+                       SECONDS_TO_REWIND = 0.5 # Updated to match user preference 
+                       frames_back = int(self.fps * SECONDS_TO_REWIND)
+                       if len(self.frame_buffer) > frames_back:
+                            during_frame = self.frame_buffer[-frames_back].copy()
+                       elif self.frame_buffer:
+                             during_frame = self.frame_buffer[0].copy()
+                       else:
+                             during_frame = frame.copy()
+
                        add_timestamp(during_frame, self.frame_count / self.fps)
                        during_path = os.path.join(self.DATA_DIR, f"{self.job_id}_{self.frame_count}_during.jpg")
                        cv2.imwrite(during_path, during_frame)
@@ -524,11 +624,8 @@ class YoloVideoTrack(VideoStreamTrack):
                   })
 
                   # Report / Update
-                  # Report / Update
                   if self.auto_report:
                        print(f"[Stream {self.job_id}] Snapshot complete. Reporting...")
-                  # else:
-                       # print(f"[Stream {self.job_id}] Snapshot complete. Stored locally.")
                   
                   # Update Global Metadata for Frontend Polling
                   if self.job_id in jobs:
@@ -539,7 +636,12 @@ class YoloVideoTrack(VideoStreamTrack):
                   
                   # Conditional Auto Report
                   if self.auto_report:
-                       report_to_backend(self.snapshot_paths, self.current_incident_info['label'])
+                       report_result = report_to_backend(self.snapshot_paths, self.current_incident_info['label'])
+                       if report_result and self.job_id in jobs:
+                           # UPDATE GLOBAL JOB STATUS WITH AI REPORT
+                           jobs[self.job_id]['aiReport'] = report_result.get('aiReport')
+                           jobs[self.job_id]['incidentId'] = report_result.get('id')
+                           print(f"[Stream {self.job_id}] AI Report Captured (ID: {report_result.get('id')})")
                   else:
                        print(f"[Stream {self.job_id}] Auto-report disabled. Skipping.")
                   
@@ -599,6 +701,11 @@ def process_video():
         auto_report = auto_report_value
     else:
         auto_report = str(auto_report_value).lower() == 'true'
+        
+    if not auto_report:
+        print(f"⚠️ WARNING: Auto-Report is DISABLED by request. 'Create AI Report' button will appear manually.")
+    else:
+        print(f"✅ Auto-Report is ENABLED.")
     
     if not input_path:
         return jsonify({"error": "Missing inputPath"}), 400
