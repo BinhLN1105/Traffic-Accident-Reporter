@@ -207,6 +207,41 @@ async function pollRealtimeStatus(jobId) {
                  updateRealtimeGallery(status.snapshot_urls);
             }
             
+            // CHECK FOR AI REPORT in status (Added by Server Fix)
+            if (status.aiReport && status.incidentId) {
+                console.log("AI Report Found in Job Status:", status.incidentId);
+                // Inject report directly into UI logic
+                // We create a mock 'incident' object and load it
+                if (!window.hasShownRealtimeReport) {
+                    window.hasShownRealtimeReport = true; // Avoid repeated alerts
+                    
+                    const reportData = {
+                         timestamp: new Date().toISOString(),
+                         type: 'Accident', // Logic could be improved to get from status
+                         location: 'Live Stream',
+                         aiReport: status.aiReport,
+                         snapshotUrls: JSON.stringify(status.snapshot_urls || []),
+                         // videoUrl: ... (if available)
+                         description: "Auto-detected by Realtime AI"
+                    };
+                    
+                    // Show Notification
+                    showAlert(reportData);
+                    
+                    // Auto-open Report view
+                    // loadIncidentIntoView(reportData); 
+                    // Or properly populate 'Live Session Report'
+                     const reportContainer = document.getElementById('live-report-container');
+                     const reportContent = document.getElementById('live-report-content');
+                     reportContent.textContent = status.aiReport;
+                     reportContainer.classList.remove('hidden');
+                     
+                     // HIDE the manual create button since we have the report
+                     const reportSection = document.getElementById('live-report-section');
+                     if(reportSection) reportSection.classList.add('hidden');
+                }
+            }
+            
             // Check if job ended or failed
             if (status.status === 'FAILED') {
                 console.error("Stream Job Failed:", status.message);
@@ -281,9 +316,19 @@ function stopWebRTC() {
     if (startBtn) startBtn.disabled = false;
     if (stopBtn) stopBtn.disabled = true;
     
-    // Show the Create Report button after stopping
+    // Show the Create Report button after stopping, BUT ONLY if no report exists yet
     const reportSection = document.getElementById('live-report-section');
-    if(reportSection) reportSection.classList.remove('hidden');
+    const reportContainer = document.getElementById('live-report-container');
+    
+    // Check if report container is visible and has content
+    const hasReport = !reportContainer.classList.contains('hidden') && 
+                      document.getElementById('live-report-content').textContent.trim().length > 0;
+                      
+    if(reportSection && !hasReport) {
+         reportSection.classList.remove('hidden');
+    } else if (reportSection) {
+         reportSection.classList.add('hidden');
+    }
 }
 
 async function generateLiveReport() {
@@ -738,7 +783,7 @@ async function startAnalysis(isRealtime) {
     const modelType = document.getElementById('model-select').value;
     const confThreshold = document.getElementById('conf-threshold').value;
     const autoReport = document.getElementById('auto-report').checked;
-
+    
     formData.append('file', file);
     formData.append('realtime', isRealtime);
     formData.append('modelType', modelType);
@@ -873,31 +918,66 @@ async function pollStatus(taskId) {
                         <img src="${API_BASE + url}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">
                         <div style="font-size:0.8em; color:#aaa; margin-top:2px;">${label}</div>
                     `;
-                    gallery.appendChild(wrap);
+                gallery.appendChild(wrap);
                     
-                    // Hidden Report Gallery (for PDF)
-                    const imgForReport = document.createElement('img');
-                    imgForReport.src = API_BASE + url;
-                    imgForReport.style.height = '150px';
-                    imgForReport.style.margin = '5px';
-                    reportSnapshots.appendChild(imgForReport);
+                    // Clone for Report PDF view
+                    const clone = document.createElement('img');
+                    clone.src = API_BASE + url;
+                    clone.style.height = '150px';
+                    clone.style.margin = '5px';
+                    reportSnapshots.appendChild(clone);
                 });
             }
             
             // Hide pre-existing report container until generated
             aiReportContainer.classList.add('hidden');
 
+            // --- NEW: AUTO DISPLAY REPORT IF AVAILABLE ---
+            // If the backend has already generated the report (because autoReport=true)
+            if (linkData.aiReport) {
+                console.log("Auto-displaying generated report...");
+                
+                // Hide "Create Report" button since it's done
+                createReportSection.classList.add('hidden');
+                
+                // Populate and show report
+                const reportContent = linkData.aiReport;
+                const header = `Report Date: ${new Date().toLocaleString()}\n\n`;
+                
+                const cleanedContent = cleanMarkdown(reportContent);
+                const summary = extractSummary(cleanedContent);
+                
+                const reportSummary = document.getElementById('ai-report-summary');
+                const toggleBtn = document.getElementById('toggle-report-btn');
+                const aiReportText = document.getElementById('ai-report-text');
+                const aiReportContainer = document.getElementById('ai-report-container');
+                
+                reportSummary.textContent = summary;
+                aiReportText.textContent = header + cleanedContent;
+                
+                aiReportText.classList.add('hidden');
+                reportSummary.classList.remove('hidden');
+                
+                toggleBtn.textContent = 'Xem chi tiết báo cáo ▼';
+                toggleBtn.style.display = cleanedContent.length > summary.length + 100 ? 'block' : 'none';
+                
+                aiReportContainer.classList.remove('hidden');
+            }
+            
         } else if (status.status === 'FAILED') {
-            alert("Processing Failed");
             statusDiv.classList.add('hidden');
+            // ... (rest of error handling)
+            const uploadInputSection = document.getElementById('upload-input-section');
+            if(uploadInputSection) uploadInputSection.classList.remove('hidden');
             if(optionsDiv) optionsDiv.classList.remove('hidden');
+            alert("Analysis Failed: " + status.message);
         } else {
-            statusText.innerText = `Analyzing... (${progress}%)`;
-            setTimeout(() => pollStatus(taskId), 1000); 
+            // Keep polling
+            setTimeout(() => pollStatus(taskId), 1000);
         }
 
     } catch (e) {
-        setTimeout(() => pollStatus(taskId), 3000);
+        console.error("Poll Error:", e);
     }
 }
 

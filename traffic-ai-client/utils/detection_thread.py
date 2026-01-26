@@ -252,16 +252,20 @@ class DetectionThread(QThread):
 
                     # --- LƯU ẢNH ---
                     if self.loop:
-                         # Chế độ Live: Lưu ngay cái ảnh vừa "lôi từ quá khứ" về
-                        path_during = self.save_image(snap_frame, current_sequence_id, detected_label, "2_during")
+                         # Chế độ Live: Lưu Before và During
+                         # 1. Before: Lấy từ buffer
+                         frame_before = frame_buffer[0] if frame_buffer else frame
+                         path_before = self.save_image(frame_before, current_sequence_id, detected_label, "1_before")
+
+                         # 2. During: Lưu ngay cái ảnh vừa "lôi từ quá khứ" về
+                         path_during = self.save_image(snap_frame, current_sequence_id, detected_label, "2_during")
                         
-                        current_snapshot_paths = [None, path_during, None]
-                        final_snapshots = current_snapshot_paths
+                         current_snapshot_paths = [path_before, path_during, None]
+                         final_snapshots = current_snapshot_paths
                         
-                        self.detection_signal.emit(detected_label, path_during)
-                        self.snapshot_saved.emit(*current_snapshot_paths)
+                         self.snapshot_saved.emit(*current_snapshot_paths)
                         
-                        snapshot_state = "IDLE" 
+                         snapshot_state = "WAITING_FOR_AFTER" 
                         
                     else:
                         # Chế độ Analyst
