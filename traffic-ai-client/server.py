@@ -10,28 +10,30 @@ import asyncio
 import json
 import logging
 import shutil
-import requests # Added for API calls
-import tempfile # For Temp Dir logic
+import requests  # Dùng để gọi API đến Java backend
+import tempfile  # Dùng cho logic thư mục tạm
 
 from ultralytics import YOLO
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from av import VideoFrame
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Cho phép CORS để frontend có thể gọi API
 
 # Thiết lập ghi log
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
-# Global Model Cache
+# Cache mô hình toàn cục
+# Lưu các mô hình đã tải để tránh tải lại nhiều lần
 MODELS = {}
 MODEL_PATHS = {
     "small": "model/small/best.pt",
     "medium": "model/medium/mediumv1.pt"
 }
 
-# Define Global Temp Data Root for Stream
+# Định nghĩa thư mục dữ liệu tạm toàn cục cho stream
+# Dùng thư mục tạm của hệ thống để tránh vấn đề khi server reload
 STREAM_DATA_ROOT = os.path.join(tempfile.gettempdir(), 'traffic_ai_data')
 os.makedirs(STREAM_DATA_ROOT, exist_ok=True)
 print(f"Stream Data Root: {STREAM_DATA_ROOT}")
@@ -57,31 +59,40 @@ def get_model(model_type="medium"):
 get_model("medium")
 
 # Kho lưu trữ thông tin công việc (Job Store)
+# Lưu trạng thái và kết quả của các job xử lý video
 jobs = {}
-pcs = set()
+pcs = set()  # Tập hợp các RTCPeerConnection cho WebRTC
 
-# --- BATCH WORKER ---
 # --- XỬ LÝ BATCH (HÀNG LOẠT) ---
 from collections import deque
 import datetime
 
 def draw_styled_box(img, x1, y1, x2, y2, label, conf, color):
-    # Box
+    """
+    Vẽ bounding box có style đẹp với nhãn và độ tin cậy
+    """
+    # Vẽ hình chữ nhật
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
     
-    # Nhãn có nền
+    # Vẽ nhãn có nền để dễ đọc
     text = f"{label} {conf:.2f}"
     font_scale = 0.8
     thickness = 2
     (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
     
+    # Vẽ nền cho text
     cv2.rectangle(img, (x1, y1 - 25), (x1 + w, y1), color, -1)
+    # Vẽ text màu trắng
     cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
 
 def add_timestamp(img, seconds):
+    """
+    Thêm timestamp vào frame
+    Vẽ outline đen trước, sau đó vẽ text vàng để dễ đọc
+    """
     time_str = str(datetime.timedelta(seconds=int(seconds)))
-    cv2.putText(img, f"Time: {time_str}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4) # Outline
-    cv2.putText(img, f"Time: {time_str}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2) # Text
+    cv2.putText(img, f"Time: {time_str}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4)  # Outline đen
+    cv2.putText(img, f"Time: {time_str}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)  # Text vàng
 
 def process_video_task(input_path, output_path, job_id, is_realtime, model_type="medium", custom_labels="accident, vehicle accident", confidence_threshold=0.70, auto_report=True):
     try:
@@ -104,57 +115,62 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         
         # Cấu hình video đầu ra
         output_fps = fps if fps > 0 else 30.0
-        fourcc = cv2.VideoWriter_fourcc(*'VP80') # Định dạng WebM
+        fourcc = cv2.VideoWriter_fourcc(*'VP80')  # Định dạng WebM (VP8 codec)
         out = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
 
         # --- CẤU HÌNH TỐI ƯU ---
-        FRAME_SKIP = 3  # Nhảy cóc 3 frame để tăng tốc
-        last_boxes = [] # Cache vẽ hình
+        FRAME_SKIP = 3  # Nhảy cóc 3 frame để tăng tốc độ xử lý
+        last_boxes = []  # Cache kết quả detection để tái sử dụng khi skip frame
         
         # --- CẤU HÌNH SNAPSHOT & XÁC NHẬN ---
-        BEFORE_SECONDS = 4.0
-        AFTER_SECONDS = 5.0
-        BUFFER_SIZE = int(fps * BEFORE_SECONDS)
+        BEFORE_SECONDS = 4.0  # Chụp ảnh "trước" cách 4 giây
+        AFTER_SECONDS = 5.0   # Chụp ảnh "sau" cách 5 giây
+        BUFFER_SIZE = int(fps * BEFORE_SECONDS)  # Kích thước buffer chứa frame
         
         # Xác thực tai nạn (Kiểm tra độ bền vững)
-        ACCIDENT_DURATION_THRESHOLD = 0.5 
+        # Cần phát hiện liên tiếp trong một khoảng thời gian để xác nhận
+        ACCIDENT_DURATION_THRESHOLD = 0.5  # Cần 0.5 giây để xác thực
         CONFIRMATION_FRAMES = int(fps * ACCIDENT_DURATION_THRESHOLD)
-        current_accident_streak = 0 
+        current_accident_streak = 0  # Đếm số frame liên tiếp phát hiện sự cố
         
+        # Buffer lưu trữ các frame gần đây (dùng deque để tự động xóa frame cũ)
         frame_buffer = deque(maxlen=BUFFER_SIZE) 
-        snapshot_state = 'SEARCHING'
-        frames_since_incident = 0
-        snapshot_paths = [] # Danh sách ảnh chụp sự cố hiện tại
-        all_snapshot_paths = [] # TẤT CẢ ảnh chụp sự cố (cho frontend)
+        snapshot_state = 'SEARCHING'  # Trạng thái: SEARCHING, CAPTURING_AFTER, COOLDOWN
+        frames_since_incident = 0  # Số frame đã trôi qua kể từ khi phát hiện
+        snapshot_paths = []  # Danh sách 3 ảnh chụp sự cố hiện tại (trước, trong, sau)
+        all_snapshot_paths = []  # TẤT CẢ ảnh chụp sự cố (cho frontend hiển thị)
         
-        detected_accidents = []
-        current_incident_info = None
-        incidents = []
-        all_reports = [] # Lưu trữ tất cả báo cáo AI
+        detected_accidents = []  # Danh sách các sự cố đã phát hiện
+        current_incident_info = None  # Thông tin sự cố hiện tại
+        incidents = []  # Tất cả các phát hiện (bao gồm cả chưa xác nhận)
+        all_reports = []  # Lưu trữ tất cả báo cáo AI đã tạo
         
         # Tạo thư mục data nếu chưa có
         DATA_DIR = os.path.dirname(output_path)
         os.makedirs(DATA_DIR, exist_ok=True)
         
-        frame_count = 0
+        frame_count = 0  # Đếm số frame đã xử lý
         
         # Theo dõi phương án dự phòng (Fallback)
+        # Lưu phát hiện tốt nhất nếu không có sự cố kéo dài
         best_fallback_conf = 0.0
-        best_fallback_data = None # (nhãn, frame_trước, frame_trong)
+        best_fallback_data = None  # (nhãn, frame_trước, frame_trong)
         
         while cap.isOpened():
-            ret, frame = cap.read() # Chỉ giữ 1 dòng read
+            ret, frame = cap.read()  # Đọc frame từ video
             
             if not ret:
                 print(f"[{job_id}] End of video stream.")
                 # BẮT BUỘC CHỤP ẢNH HOÀN THÀNH NẾU ĐANG CHỜ
+                # Nếu video kết thúc trước khi chụp được ảnh "After"
                 if snapshot_state == 'CAPTURING_AFTER':
                     print(f"[{job_id}] Video ended before 'After' frame. Forcing capture.")
                     after_path = os.path.join(DATA_DIR, f"{job_id}_{frame_count}_after.jpg")
                     
                     # Chụp & Đóng dấu thời gian
-                    final_after = frame_buffer[-1].copy() if frame_buffer else (last_boxes[0] if last_boxes else None) # Dự phòng lấy cái gì đó
-                    if final_after is None: # Trường hợp cực đoan
+                    # Lấy frame cuối cùng từ buffer, hoặc dự phòng
+                    final_after = frame_buffer[-1].copy() if frame_buffer else (last_boxes[0] if last_boxes else None)
+                    if final_after is None:  # Trường hợp cực đoan: tạo frame đen
                          final_after = np.zeros((height, width, 3), dtype=np.uint8)
 
                     add_timestamp(final_after, frame_count / fps)
@@ -163,8 +179,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                     snapshot_paths.append(after_path)
                     all_snapshot_paths.append(after_path)
                     
-                    # reports_data = [] # REMOVED local init
-                    # REPORT NGAY LẬP TỨC
+                    # Tạo báo cáo ngay lập tức nếu bật auto_report
                     if auto_report and current_incident_info:
                         report_result = report_to_backend(snapshot_paths, current_incident_info['label'], output_path)
                         if report_result:
@@ -185,20 +200,22 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
             current_frame_label = ""
             current_frame_conf = 0.0
 
-            # --- LOGIC FRAME SKIPPING ---
+            # --- LOGIC BỎ QUA FRAME (FRAME SKIPPING) ---
+            # Chỉ chạy AI mỗi FRAME_SKIP frame để tăng tốc độ xử lý
             if frame_count % FRAME_SKIP == 0:
-                # Chạy AI (có imgsz=640 để tối ưu)
+                # Chạy AI với kích thước 640 để tối ưu tốc độ
+                # persist=True: theo dõi đối tượng qua các frame
                 results = model.track(frame, persist=True, imgsz=640, verbose=False, tracker="bytetrack.yaml")
                 
-                last_boxes = [] # Xóa cache cũ
+                last_boxes = []  # Xóa cache cũ để lưu kết quả mới
                 
                 if results:
                     for result in results:
                         for box in result.boxes:
-                            coords = tuple(map(int, box.xyxy[0]))
-                            conf = float(box.conf[0])
-                            cls_id = int(box.cls[0])
-                            label = model.names[cls_id]
+                            coords = tuple(map(int, box.xyxy[0]))  # Tọa độ bounding box
+                            conf = float(box.conf[0])  # Độ tin cậy
+                            cls_id = int(box.cls[0])  # ID lớp
+                            label = model.names[cls_id]  # Tên lớp
                             
                             last_boxes.append((coords, label, conf))
                             
@@ -208,13 +225,14 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                                 current_frame_label = label
                                 current_frame_conf = conf
                                 
-                                # Update Fallback Candidate
+                                # Cập nhật ứng viên dự phòng (phát hiện tốt nhất)
                                 if conf > best_fallback_conf:
                                     best_fallback_conf = conf
                                     fb_before = frame_buffer[0].copy() if frame_buffer else frame.copy()
                                     
                                     # LOGIC TUA NGƯỢC CHO CẢ DỰ PHÒNG
                                     # Ngay cả khi dự phòng, chúng ta muốn khung hình từ 1.5s trước đó nếu có thể
+                                    # Để bắt được khoảnh khắc va chạm tốt hơn
                                     f_rewind_s = 1.5
                                     f_frames_back = int(fps * f_rewind_s)
                                     if len(frame_buffer) > f_frames_back:
@@ -228,6 +246,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
 
             else:
                 # Dùng lại kết quả từ cache (Skip frame)
+                # Không chạy AI, chỉ kiểm tra lại kết quả đã có
                 for box_data in last_boxes:
                     (coords, label, conf) = box_data
                     if label.lower() in target_labels and conf > confidence_threshold:
@@ -407,21 +426,29 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
 
 def report_to_backend(snapshot_paths, label, video_path=None):
     """
-    Send the 3 snapshots + metadata + optional video to the Java Backend
+    Gửi 3 ảnh chụp + metadata + video (nếu có) đến Java Backend
+    
     Endpoint: POST http://localhost:8080/api/incidents/report
     Params: imageBefore, imageDuring, imageAfter, type, description, video
+    
+    Logic:
+    - Mở 3 file ảnh và gửi dưới dạng multipart/form-data
+    - Nếu có video, thêm vào files
+    - Backend sẽ xử lý và tạo báo cáo AI bằng Gemini
     """
     API_URL = "http://localhost:8080/api/incidents/report"
     
     try:
         print(f"Uploading incident '{label}' to Backend...")
         
+        # Mở các file ảnh để gửi
         files = {
             'imageBefore': open(snapshot_paths[0], 'rb'),
             'imageDuring': open(snapshot_paths[1], 'rb'),
             'imageAfter': open(snapshot_paths[2], 'rb'),
         }
         
+        # Thêm video nếu có và file tồn tại
         if video_path and os.path.exists(video_path):
             files['video'] = open(video_path, 'rb')
         
@@ -432,7 +459,7 @@ def report_to_backend(snapshot_paths, label, video_path=None):
         
         response = requests.post(API_URL, files=files, data=data)
         
-        # Close files
+        # Đóng tất cả file đã mở
         for f in files.values():
             f.close()
             

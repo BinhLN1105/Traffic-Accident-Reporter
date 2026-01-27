@@ -2,16 +2,22 @@ import requests
 import os
 
 class APIClient:
+    """
+    Client để giao tiếp với Java Backend API
+    Xử lý việc gửi báo cáo sự cố và lấy lịch sử phát hiện
+    """
     def __init__(self, base_url="http://localhost:8080/api"):
+        """Khởi tạo client với URL cơ sở của backend"""
         self.base_url = base_url
 
     def send_incident(self, image_path, incident_type, location="Camera-01"):
         """
-        Sends an incident report to the backend.
+        Gửi báo cáo sự cố đơn giản (1 ảnh) đến backend
         """
         endpoint = f"{self.base_url}/incidents"
         
         try:
+            # Mở file ảnh và gửi kèm metadata
             with open(image_path, 'rb') as img:
                 files = {'image': img}
                 data = {
@@ -30,19 +36,23 @@ class APIClient:
             return None
     
     def send_full_report(self, before_path, during_path, after_path, incident_type, video_path=None):
-        """Send all 3 snapshots to backend for AI report generation, optional video"""
+        """
+        Gửi báo cáo đầy đủ với 3 ảnh chụp (trước, trong, sau) đến backend để tạo báo cáo AI
+        Có thể kèm video nếu có
+        """
         url = f"{self.base_url}/incidents/report"
         
         try:
-            # Prepare multipart form data with 3 images
-            # NOTE: We can't use with open() for multiple files easily in one block without ExitStack
-            # So we open them and ensure they close
+            # Chuẩn bị dữ liệu multipart form với 3 ảnh
+            # Lưu ý: Không thể dùng with open() cho nhiều file trong một block dễ dàng
+            # Nên mở file và đảm bảo đóng chúng sau khi dùng
             files = {
                 'imageBefore': open(before_path, 'rb'),
                 'imageDuring': open(during_path, 'rb'),
                 'imageAfter': open(after_path, 'rb')
             }
             
+            # Thêm video nếu có và file tồn tại
             if video_path and os.path.exists(video_path):
                 files['video'] = open(video_path, 'rb')
             
@@ -51,9 +61,10 @@ class APIClient:
                 'description': f'Auto-detected {incident_type}'
             }
             
-            response = requests.post(url, files=files, data=data, timeout=60) # Increased timeout for video upload
+            # Tăng timeout cho việc upload video (có thể lớn)
+            response = requests.post(url, files=files, data=data, timeout=60)
             
-            # Close files
+            # Đóng tất cả file đã mở
             for f in files.values():
                 f.close()
             
@@ -70,15 +81,19 @@ class APIClient:
             return None
     
     def get_history(self, limit=50):
-        """Get detection history from backend"""
-        url = f"{self.base_url}/incidents"  # Fixed: removed duplicate /api
+        """
+        Lấy lịch sử phát hiện từ backend
+        Giới hạn số lượng kết quả trả về
+        """
+        url = f"{self.base_url}/incidents"
         
         try:
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 incidents = response.json()
                 print(f"✅ Fetched {len(incidents)} incidents from history")
-                return incidents[:limit]  # Limit results
+                # Giới hạn số lượng kết quả trả về
+                return incidents[:limit]
             else:
                 print(f"❌ Failed to fetch history: {response.status_code}")
                 return []
