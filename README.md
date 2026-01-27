@@ -146,12 +146,16 @@
 - **MySQL 8.0+**
 - **Node.js** (optional, for live-server)
 
-### Bước 1: Clone Repository
+### Bước 1: Clone Repository và Download Model
 
+1. Clone Repository
 ```bash
 git clone https://github.com/BinhLN1105/Traffic-Accident-Reporter.git
 cd Traffic-Accident-Reporter
 ```
+
+2. Download Model
+- https://drive.google.com/file/d/1HhsU_Yph0WwsP7VucYJrmbIQ9APkaxpS/view?usp=sharing
 
 ### Bước 2: Cấu Hình Database
 
