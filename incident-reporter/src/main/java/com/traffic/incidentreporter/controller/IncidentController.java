@@ -89,14 +89,14 @@ public class IncidentController {
 
     @PostMapping("/report")
     public ResponseEntity<Incident> reportFullIncident(
-            @RequestParam("imageBefore") MultipartFile imageBefore,
-            @RequestParam("imageDuring") MultipartFile imageDuring,
-            @RequestParam("imageAfter") MultipartFile imageAfter,
+            @RequestParam(value = "imageBefore", required = false) MultipartFile imageBefore,
+            @RequestParam(value = "imageDuring", required = false) MultipartFile imageDuring,
+            @RequestParam(value = "imageAfter", required = false) MultipartFile imageAfter,
             @RequestParam("type") String type,
             @RequestParam(value = "description", required = false) String description,
             @RequestParam(value = "video", required = false) MultipartFile video
     ) {
-        // 1. Save Images
+        // 1. Save Images (if present)
         String[] fileNames = new String[3];
         MultipartFile[] files = {imageBefore, imageDuring, imageAfter};
         java.util.List<java.nio.file.Path> savedPaths = new java.util.ArrayList<>();
@@ -108,11 +108,15 @@ public class IncidentController {
             }
             
             for (int i = 0; i < files.length; i++) {
-                String name = "snap_" + i + "_" + System.currentTimeMillis() + "_" + files[i].getOriginalFilename();
-                java.nio.file.Path target = uploadDir.resolve(name);
-                java.nio.file.Files.copy(files[i].getInputStream(), target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                fileNames[i] = "/api/videos/download/" + name;
-                savedPaths.add(target);
+                if (files[i] != null && !files[i].isEmpty()) { // Check for null
+                    String name = "snap_" + i + "_" + System.currentTimeMillis() + "_" + files[i].getOriginalFilename();
+                    java.nio.file.Path target = uploadDir.resolve(name);
+                    java.nio.file.Files.copy(files[i].getInputStream(), target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    fileNames[i] = "/api/videos/download/" + name;
+                    savedPaths.add(target);
+                } else {
+                    fileNames[i] = null;
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -132,8 +136,15 @@ public class IncidentController {
             }
         }
 
-        // 2. Analyze with Gemini (Multi-image)
-        String aiAnalysis = geminiService.analyzeImage(savedPaths);
+        // 2. Analyze with Gemini (Multi-image) OR Skip if no images
+        String aiAnalysis;
+        if (savedPaths.isEmpty()) {
+            // "No Accident" Case: No images processed
+            aiAnalysis = "Hệ thống AI không phát hiện tai nạn trong video này. Video được đánh giá là an toàn.";
+        } else {
+            // Standard Case: Analyze images
+            aiAnalysis = geminiService.analyzeImage(savedPaths);
+        }
 
         // 3. Create Entity
         Incident incident = new Incident();
@@ -153,8 +164,12 @@ public class IncidentController {
         incident.setDescription(description != null ? description : "AI Report Generated");
         
         // Set URLs
-        incident.setImageUrl(fileNames[1]); // Use 'During' as main thumbnail
-        incident.setSnapshotUrls(String.format("[\"%s\", \"%s\", \"%s\"]", fileNames[0], fileNames[1], fileNames[2]));
+        incident.setImageUrl(fileNames[1] != null ? fileNames[1] : "/assets/no-image.png"); // Fallback check
+        incident.setSnapshotUrls(String.format("[\"%s\", \"%s\", \"%s\"]", 
+            fileNames[0] != null ? fileNames[0] : "", 
+            fileNames[1] != null ? fileNames[1] : "", 
+            fileNames[2] != null ? fileNames[2] : ""));
+            
         incident.setVideoUrl(videoUrl); // Set the video URL
         incident.setAiReport(aiAnalysis);
         incident.setAlertSent(false);

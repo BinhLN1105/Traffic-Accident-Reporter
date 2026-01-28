@@ -1,8 +1,8 @@
 import sys
 import cv2
 import numpy as np
-import signal  # For Ctrl+C handling
-import os  # For file path checking
+import signal  # Xử lý Ctrl+C để thoát ứng dụng
+import os  # Kiểm tra đường dẫn file
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QComboBox, QSlider,
@@ -29,11 +29,15 @@ class ReportWorker(QThread):
         self.video_path = video_path
 
     def run(self):
+        """
+        Chạy worker trong background thread để tạo báo cáo
+        Không chặn UI thread
+        """
         try:
-            # Generate the report in background
-            # EXPECTS: before, during, after, incident_type, video_path
+            # Tạo báo cáo trong background
+            # Yêu cầu: before, during, after, incident_type, video_path
             
-            # Ensure we have 3 snapshots (pad with None if needed)
+            # Đảm bảo có đủ 3 snapshot (thêm None nếu thiếu)
             safe_snaps = self.snapshot_paths + [None] * (3 - len(self.snapshot_paths))
             incident_type = "vehicle accident" 
             
@@ -62,12 +66,20 @@ class ReportWorker(QThread):
         try:
              # Truyền incident_type="vehicle accident" rõ ràng
              # Giải nén danh sách ảnh chụp để khớp với chữ ký hàm (trước, trong, sau)
-             if len(self.snapshots) >= 3:
+             # Update: Hỗ trợ trường hợp không có snapshot (No Accident)
+             p1, p2, p3 = None, None, None
+             if self.snapshots and len(self.snapshots) >= 3:
                  p1, p2, p3 = self.snapshots[:3]
-                 result = self.generator.generate_report(p1, p2, p3, "vehicle accident", self.video_source)
-                 self.finished.emit(result)
-             else:
-                 self.finished.emit({'success': False, 'report': "Invalid snapshots"})
+             
+             # Nếu không có incident_type được truyền vào, tự động xác định
+             type_to_send = "vehicle accident"
+             if not p1 and not p2 and not p3:
+                 type_to_send = "No Accident"
+
+             # Nếu incident_id được truyền vào constructor, ta có thể dùng nó (tùy logic)
+             # Ở đây ta gọi generator
+             result = self.generator.generate_report(p1, p2, p3, type_to_send, self.video_source)
+             self.finished.emit(result)
         except Exception as e:
              print(f"ReportWorker API Error: {e}")
              self.finished.emit({'success': False, 'report': str(e)})
@@ -81,28 +93,32 @@ class TrafficMonitorApp(QMainWindow):
         # Áp dụng giao diện tối
         self.setStyleSheet(self.get_dark_theme())
         
-        # State variables
-        self.source = 0
-        self.output_path = None
-        self.detection_count = 0
-        self.is_dark_mode = True # Track theme state
-        self.api_client = APIClient()
-        self.thread = None
+        # Các biến trạng thái
+        self.source = 0  # Nguồn video (0 = webcam, hoặc đường dẫn file)
+        self.output_path = None  # Đường dẫn lưu video đã xử lý
+        self.detection_count = 0  # Đếm số lần phát hiện
+        self.is_dark_mode = True  # Theo dõi trạng thái theme (sáng/tối)
+        self.api_client = APIClient()  # Client để gọi API backend
+        self.thread = None  # Thread xử lý phát hiện
         
         # Khởi tạo bộ sinh báo cáo AI với API client
         from utils.report_generator import ReportGenerator
         self.report_generator = ReportGenerator(api_client=self.api_client)
         
-        # Setup UI
+        # Thiết lập giao diện người dùng
         self.setup_ui()
         
     def setup_ui(self):
-        # Central widget with tabs
+        """
+        Thiết lập giao diện người dùng chính
+        Tạo các tab: Live Detection, Video Analyst, Detection History
+        """
+        # Widget trung tâm với các tab
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         main_layout = QVBoxLayout(self.central_widget)
         
-        # Tab widget
+        # Widget tab để chuyển đổi giữa các chế độ
         self.tabs = QTabWidget()
         
         # Nút Chuyển Đổi Giao Diện (Góc Trên Phải)
@@ -112,27 +128,27 @@ class TrafficMonitorApp(QMainWindow):
         self.btn_theme.setFixedSize(40, 30)
         self.btn_theme.setStyleSheet("border: none; font-size: 16px; background: transparent;")
         
-        # Add to Tab Corner
+        # Thêm vào góc tab
         self.tabs.setCornerWidget(self.btn_theme, Qt.Corner.TopRightCorner)
         
         main_layout.addWidget(self.tabs)
         
-        # Tab 1: Phát hiện Trực tiếp
+        # Tab 1: Phát hiện Trực tiếp (Live Detection)
         self.tab_live = QWidget()
         self.setup_live_tab()
         self.tabs.addTab(self.tab_live, "📹 Live Detection")
         
-        # Tab 2: Video Analyst (NEW)
+        # Tab 2: Video Analyst (Phân tích video hàng loạt)
         self.tab_analyst = QWidget()
         self.setup_analyst_tab()
         self.tabs.addTab(self.tab_analyst, "🎞️ Video Analyst")
         
-        # Tab 3: History
+        # Tab 3: Lịch sử phát hiện (History)
         self.tab_history = QWidget()
         self.setup_history_tab()
         self.tabs.addTab(self.tab_history, "📊 Detection History")
         
-        # Status bar
+        # Thanh trạng thái ở dưới cùng
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
@@ -293,15 +309,17 @@ class TrafficMonitorApp(QMainWindow):
         ])
         ai_layout.addWidget(self.combo_ai_model)
         
-        # Checkbox for Auto-Report in Live Mode
+        # Checkbox cho Auto-Report trong chế độ Live
+        # Tự động tạo báo cáo AI khi phát hiện sự cố được xác nhận
         self.chk_live_auto_report = QCheckBox("Auto-Generate Report")
         self.chk_live_auto_report.setToolTip("Automatically generate AI report when accident is confirmed")
         ai_layout.addWidget(self.chk_live_auto_report)
         
-        # MỚI: Nút Báo Cáo Thủ Công
+        # Nút Báo Cáo Thủ Công
+        # Cho phép người dùng tạo báo cáo bất cứ lúc nào khi có ảnh chụp
         self.btn_manual_report = QPushButton("📄 Tạo Báo Cáo Ngay")
         self.btn_manual_report.setToolTip("Tạo báo cáo cho các ảnh chụp đang hiển thị")
-        self.btn_manual_report.setEnabled(False) # Chỉ kích hoạt khi có ảnh chụp
+        self.btn_manual_report.setEnabled(False)  # Chỉ kích hoạt khi có ảnh chụp
         self.btn_manual_report.clicked.connect(self.manual_report_generation)
         self.btn_manual_report.setStyleSheet("""
             QPushButton { background: #d97706; border: 1px solid #b45309; border-radius: 4px; color: white; padding: 6px; }
@@ -979,24 +997,27 @@ class TrafficMonitorApp(QMainWindow):
         self.btn_cancel.setEnabled(True)
     
     def on_process_finished(self):
-        """Called when detection thread finishes naturally or is stopped"""
+        """
+        Được gọi khi thread phát hiện kết thúc tự nhiên hoặc bị dừng
+        Xử lý việc tạo báo cáo cuối cùng và hiển thị video đã xử lý
+        """
         self.status_bar.showMessage("✅ Detection Finished")
         self.log("✅ Processing complete.")
         
-        # Reset UI Button States
+        # Reset trạng thái các nút UI
         self.update_control_buttons("IDLE")
         
-        # --- LATE REPORT GENERATION ---
-        # Generate report only if we have ALL 3 snapshots (Strict Mode)
+        # --- TẠO BÁO CÁO MUỘN (LATE REPORT GENERATION) ---
+        # Chỉ tạo báo cáo nếu có ĐẦY ĐỦ 3 snapshot (Chế độ nghiêm ngặt)
         has_snaps = hasattr(self, 'snapshot_paths') and all(self.snapshot_paths)
         if has_snaps and self.combo_ai_model.currentIndex() > 0:
              self.log("🤖 Video finished. Generating Final AI Report...")
-             QApplication.processEvents()
+             QApplication.processEvents()  # Cập nhật UI ngay
              
              path_before, path_during, path_after = self.snapshot_paths
-             incident_type = "vehicle accident" # Could use self.last_detection_type if stored
+             incident_type = "vehicle accident"  # Có thể dùng self.last_detection_type nếu đã lưu
              
-             # Call generator with VIDEO path
+             # Gọi generator với đường dẫn VIDEO
              video_path_to_send = self.output_path if self.output_path and os.path.exists(self.output_path) else None
              self.log(f"📤 Uploading report with video: {os.path.basename(video_path_to_send) if video_path_to_send else 'None'}")
              
@@ -1015,31 +1036,34 @@ class TrafficMonitorApp(QMainWindow):
                 if hasattr(self, 'btn_view_report'): self.btn_view_report.setEnabled(True)
                 self.show_report_dialog(result.get('report', 'Unknown error'), [path_before, path_during, path_after])
         
-        # Show output video if available
+        # Hiển thị video đầu ra nếu có
         if self.output_path and os.path.exists(self.output_path):
             self.log(f"🎬 Loading playback: {os.path.basename(self.output_path)}")
             self.show_video_player(self.output_path)
     
     def show_video_player(self, video_path):
-        """Show video player embedded in the main stack"""
+        """
+        Hiển thị video player được nhúng trong stack chính
+        Chuyển từ live feed sang replay mode
+        """
         try:
             from widgets.video_player import VideoPlayerWidget
             
-            # Clear previous player if exists
+            # Xóa player cũ nếu có
             for i in range(self.replay_layout.count()):
                 item = self.replay_layout.itemAt(i)
                 if item.widget():
                     item.widget().deleteLater()
             
-            # Add video player to the replay container
+            # Thêm video player vào container replay
             self.player_widget = VideoPlayerWidget(video_path)
             self.replay_layout.addWidget(self.player_widget)
             
-            # Switch Stack to Page 1 (Replay)
+            # Chuyển Stack sang Page 1 (Replay)
             self.stack_video.setCurrentIndex(1)
             
-            # Add "Back to Live" button to the player widget area or right panel
-            # For now, simply starting a new detection should switch back
+            # Ghi chú: Có thể thêm nút "Back to Live" ở đây
+            # Hiện tại, chỉ cần bắt đầu detection mới sẽ tự động chuyển về
             
             self.log("✅ Video player loaded in Analyst View")
             
@@ -1190,6 +1214,7 @@ class TrafficMonitorApp(QMainWindow):
              video_path = result_data.get('original_file') # Use original input
              
              # Run Worker
+             # Fix: Nếu không có snapshot, vẫn chạy worker để báo cáo "No Accident"
              worker = ReportWorker(self.report_generator, snapshots, None, video_path)
              
              # Handle completion closure to update specific result
@@ -1377,8 +1402,8 @@ class TrafficMonitorApp(QMainWindow):
         # Check if we have valid snapshots
         valid_snaps = [p for p in self.snapshot_paths if p and os.path.exists(p)]
         if not valid_snaps:
-            self.log("⚠️ Need at least one snapshot for report")
-            return
+            self.log("⚠️ No snapshots found. Converting to 'No Accident' report...")
+            # return # REMOVED to allow No Accident report
             
         current_vid = None
         
@@ -1434,7 +1459,8 @@ class TrafficMonitorApp(QMainWindow):
             
             # Update UI buttons immediately
             self.btn_view_report.setEnabled(True)
-            self.btn_view_report.setText(f"View Report (#{result['incident_id']})")
+            report_title = "No Accident" if result.get('report') and "No accident detected" in result.get('report') else f"#{result['incident_id']}"
+            self.btn_view_report.setText(f"View Report ({report_title})")
             
             self.show_report_dialog(result['report'], [path_before, path_during, path_after])
         else:
@@ -1669,26 +1695,31 @@ class TrafficMonitorApp(QMainWindow):
         self.update_control_buttons("RUNNING")
         
     def cancel_detection(self):
-        """Handle Stop/Pause/Cancel Logic"""
+        """
+        Xử lý logic Stop/Pause/Cancel
+        Logic 2 bước:
+        1. Nếu đang chạy -> Tạm dừng
+        2. Nếu đã tạm dừng -> Hủy và reset
+        """
         if not hasattr(self, 'thread') or not self.thread: return
         
-        # Case 1: Currently Running -> PAUSE
+        # Trường hợp 1: Đang chạy -> TẠM DỪNG
         if not self.thread.paused:
             self.thread.pause()
             self.log("⏸️ Detection Paused.")
             self.update_control_buttons("PAUSED")
             
-        # Case 2: Already Paused -> CANCEL (Reset)
+        # Trường hợp 2: Đã tạm dừng -> HỦY (Reset)
         else:
             self.log("❌ Cancelling detection session...")
             self.thread.stop()
             self.thread = None
             
-            # Reset UI
+            # Reset UI về trạng thái ban đầu
             self.update_control_buttons("IDLE")
             self.status_bar.showMessage("Session Cancelled")
             
-            # Refund/Reset State
+            # Reset trạng thái và xóa ảnh chụp
             self.snapshot_paths = [None, None, None]
             self.img_before.setText("No Image")
             self.img_before.setPixmap(QPixmap())
@@ -1697,6 +1728,7 @@ class TrafficMonitorApp(QMainWindow):
             self.img_after.setText("No Image")
             self.img_after.setPixmap(QPixmap())
             
+            # Chuyển về live view
             self.stack_video.setCurrentIndex(0)
             if self.source == 0:
                 self.image_label.setText("📹 No Video Feed")
@@ -1717,33 +1749,39 @@ class TrafficMonitorApp(QMainWindow):
         self.status_bar.showMessage(f"🎬 Playing: {os.path.basename(str(self.source))}")
 
     def update_control_buttons(self, state):
-        """Update button text/state based on app state: IDLE, RUNNING, PAUSED"""
+        """
+        Cập nhật text và trạng thái nút dựa trên trạng thái app
+        Các trạng thái: IDLE (rảnh), RUNNING (đang chạy), PAUSED (tạm dừng)
+        """
         if state == "IDLE":
+            # Trạng thái rảnh: Có thể bắt đầu detection
             self.btn_start.setText("▶️ Start Detection")
             self.btn_start.setEnabled(True)
             self.btn_select.setEnabled(True)
             
             self.btn_cancel.setText("❌ Cancel Detection")
-            self.btn_cancel.setEnabled(False)
+            self.btn_cancel.setEnabled(False)  # Không cần cancel khi đã rảnh
             self.btn_cancel.setStyleSheet("background-color: #ef4444; color: white; font-weight: bold;")
             
         elif state == "RUNNING":
+            # Trạng thái đang chạy: Không thể bắt đầu mới, có thể tạm dừng
             self.btn_start.setText("▶️ Start Detection")
-            self.btn_start.setEnabled(False) 
-            self.btn_select.setEnabled(False)
+            self.btn_start.setEnabled(False)  # Đang chạy rồi, không thể start lại
+            self.btn_select.setEnabled(False)  # Không thể đổi nguồn khi đang chạy
             
             self.btn_cancel.setText("⏸️ Pause Detection")
             self.btn_cancel.setEnabled(True)
-            self.btn_cancel.setStyleSheet("background-color: #f59e0b; color: white; font-weight: bold;") # Amber for pause
+            self.btn_cancel.setStyleSheet("background-color: #f59e0b; color: white; font-weight: bold;")  # Màu vàng cho pause
             
         elif state == "PAUSED":
+            # Trạng thái tạm dừng: Có thể tiếp tục hoặc hủy
             self.btn_start.setText("⏯️ Resume Detection")
-            self.btn_start.setEnabled(True)
-            self.btn_select.setEnabled(False)
+            self.btn_start.setEnabled(True)  # Có thể resume
+            self.btn_select.setEnabled(False)  # Vẫn không thể đổi nguồn
             
             self.btn_cancel.setText("❌ Cancel Session")
             self.btn_cancel.setEnabled(True)
-            self.btn_cancel.setStyleSheet("background-color: #ef4444; color: white; font-weight: bold;") # Red for cancel
+            self.btn_cancel.setStyleSheet("background-color: #ef4444; color: white; font-weight: bold;")  # Màu đỏ cho cancel
         
     
     def toggle_theme(self):
@@ -2128,64 +2166,80 @@ class TrafficMonitorApp(QMainWindow):
             self.log("Failed to report Incident.")
 
     def convert_cv_qt(self, cv_img):
-        """Convert from an opencv image to QPixmap"""
+        """
+        Chuyển đổi từ ảnh OpenCV sang QPixmap để hiển thị trong PyQt
+        OpenCV dùng BGR, PyQt cần RGB
+        """
+        # Chuyển từ BGR sang RGB
         rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
+        # Tạo QImage từ dữ liệu numpy
         convert_to_Qt_format = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        # Scale về kích thước phù hợp (giữ tỷ lệ)
         p = convert_to_Qt_format.scaled(800, 600, Qt.AspectRatioMode.KeepAspectRatio)
         return QPixmap.fromImage(p)
 
     def closeEvent(self, event):
-        """Ensure proper cleanup when closing window"""
+        """
+        Đảm bảo dọn dẹp đúng cách khi đóng cửa sổ
+        Được gọi tự động khi người dùng đóng cửa sổ
+        """
         print("🚪 closeEvent triggered")
         self.cleanup()
         event.accept()
 
         import os
         print("☠️ Force killing process...")
-        os._exit(0) # Giết tiến trình ngay lập tức, bỏ qua mọi chờ đợi
+        os._exit(0)  # Giết tiến trình ngay lập tức, bỏ qua mọi chờ đợi
     
     def cleanup(self):
-        """Centralized cleanup method"""
-        # Prevent recursive calls
+        """
+        Phương thức dọn dẹp tập trung
+        Dừng thread, giải phóng tài nguyên OpenCV và API client
+        """
+        # Ngăn chặn gọi đệ quy
         if hasattr(self, '_cleanup_in_progress') and self._cleanup_in_progress:
             return
         
         self._cleanup_in_progress = True
         print("🛑 Starting cleanup...")
         
+        # Dừng thread phát hiện nếu đang chạy
         if self.thread and self.thread.isRunning():
             print("⏸️ Stopping detection thread...")
             self.thread.stop()
             
-            # Wait for thread to finish (with timeout)
+            # Đợi thread kết thúc (có timeout)
             print("⏳ Waiting for thread to stop (max 2s)...")
-            if not self.thread.wait(2000):  # 2s timeout
+            if not self.thread.wait(2000):  # Timeout 2 giây
                 print("⚠️ Thread didn't stop, force terminating...")
                 self.thread.terminate()
-                if not self.thread.wait(1000):  # 1s for termination
+                if not self.thread.wait(1000):  # Đợi thêm 1 giây cho termination
                     print("❌ Force quit failed!")
                 else:
                     print("✅ Thread force-terminated")
             else:
                 print("✅ Thread stopped gracefully")
         
-        # Release CV2 resources
+        # Giải phóng tài nguyên OpenCV
         try:
             cv2.destroyAllWindows()
             print("✅ CV2 windows destroyed")
         except:
             pass
         
-        # Close any open resources
+        # Đóng các tài nguyên đã mở
         if hasattr(self, 'api_client'):
             self.api_client = None
         
         print("✅ Cleanup complete")
     
     def __del__(self):
-        """Destructor - last resort cleanup"""
+        """
+        Destructor - dọn dẹp cuối cùng
+        Được gọi khi object bị hủy, là biện pháp cuối cùng
+        """
         try:
             if hasattr(self, 'thread') and self.thread and self.thread.isRunning():
                 print("⚠️ __del__ cleanup - thread still running!")
@@ -2195,7 +2249,10 @@ class TrafficMonitorApp(QMainWindow):
             pass
 
 def signal_handler(signum, frame):
-    """Handle Ctrl+C gracefully"""
+    """
+    Xử lý Ctrl+C một cách graceful
+    Được đăng ký để xử lý tín hiệu SIGINT
+    """
     print("\n🛑 Interrupt received, forcing exit...")
     import sys
     sys.exit(0)
