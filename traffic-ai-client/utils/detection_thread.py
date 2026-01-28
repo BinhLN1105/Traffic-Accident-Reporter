@@ -111,6 +111,9 @@ class DetectionThread(QThread):
         AFTER_FRAMES_REQUIRED = int(video_fps * AFTER_SECONDS)  # Số frame cần đợi để chụp "sau"
         
         SKIP_FRAMES = 3  # Xử lý mỗi frame thứ 3 để tăng tốc (khớp với server)
+        
+        # Fallback cần ít nhất 4 frame liên tiếp (~0.13s) để không bắt nhầm nhiễu
+        MIN_FALLBACK_STREAK = 4
 
         
         # Buffer lưu trữ các frame gần đây (dùng deque để tự động xóa frame cũ)
@@ -200,8 +203,9 @@ class DetectionThread(QThread):
                 current_time = time.time()
                 is_incident_now = False
                 detected_label = ""
+                detected_conf = 0.0
 
-                # Duyệt qua tất cả kết quả phát hiện
+                # Duyệt qua tất cả kết quả phát hiện để tìm label tốt nhất trong frame này
                 for result in results:
                     for box in result.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])  # Tọa độ bounding box
@@ -213,15 +217,10 @@ class DetectionThread(QThread):
                         
                         # Kiểm tra xem label có trong danh sách cần phát hiện không
                         if label.lower() in target_labels:
-                            detected_label = label
-                            
-                            # Cập nhật ứng viên dự phòng (độ tin cậy tốt nhất)
-                            # Dùng khi không có sự cố kéo dài nhưng có phát hiện tốt
-                            if conf > best_fallback_conf:
-                                best_fallback_conf = conf
-                                fb_before = frame_buffer[0].copy() if frame_buffer else frame.copy()
-                                fb_during = frame.copy()
-                                best_fallback_data = (label, fb_before, fb_during)
+                            # Ưu tiên label có độ tin cậy cao nhất trong frame hiện tại
+                            if conf > detected_conf:
+                                detected_label = label
+                                detected_conf = conf
 
                 # --- LOGIC XÁC NHẬN (Kiểm tra độ bền vững) ---
                 # Cần phát hiện liên tiếp trong một khoảng thời gian để xác nhận sự cố
@@ -232,6 +231,25 @@ class DetectionThread(QThread):
                     # Có phát hiện sự cố trong frame này
                     current_accident_streak += 1  # Tăng streak
                     missing_frame_tolerance_count = 0  # Reset tolerance khi phát hiện
+                    
+                    # --- LOGIC FALLBACK MỚI (Mini-Streak) ---
+                    # Chỉ cập nhật Fallback khi Streak đã đạt ngưỡng tối thiểu
+                    # Điều này loại bỏ hoàn toàn các pha nhấp nháy 1-3 frame
+                    if current_accident_streak >= MIN_FALLBACK_STREAK:
+                        if detected_conf > best_fallback_conf:
+                            best_fallback_conf = detected_conf
+                            
+                            # Logic tua ngược để lấy ảnh cho fallback
+                            fb_before = frame_buffer[0].copy() if frame_buffer else frame.copy()
+                            
+                            # Tua ngược khoảng 0.5s cho frame During của fallback
+                            fb_rewind = int(video_fps * 0.5)
+                            if len(frame_buffer) > fb_rewind:
+                                fb_during = frame_buffer[-fb_rewind].copy()
+                            else:
+                                fb_during = frame.copy()
+                                
+                            best_fallback_data = (detected_label, fb_before, fb_during)
                     
                     # Chụp khoảnh khắc chính xác khi sự cố BẮT ĐẦU (Streak == 1)
                     if current_accident_streak == 1:

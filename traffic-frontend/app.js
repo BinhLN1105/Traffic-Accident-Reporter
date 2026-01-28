@@ -448,15 +448,40 @@ function addToFeed(incident, isNew = false) {
     const card = document.createElement('div');
     card.className = 'incident-card' + (isNew ? ' new-item' : '');
     const time = new Date(incident.timestamp).toLocaleTimeString();
-    const typeClass = incident.type === 'Fire' ? 'badge-fire' : 'badge-accident';
     
-    // Truncate description for summary
+    // Determine Badge Color
+    let typeClass = 'badge-accident';
+    const typeLower = (incident.type || '').toLowerCase();
+    const isNoAccident = typeLower.includes('no accident') || typeLower.includes('safe');
+    
+    if (isNoAccident) {
+        typeClass = 'badge-safe';
+    } else if (typeLower === 'fire') {
+        typeClass = 'badge-fire';
+    }
+    
+    // Truncate description
     const description = incident.description || incident.aiReport || 'No description';
     const shortDesc = description.length > 100 ? description.substring(0, 100) + '...' : description;
     const hasMore = description.length > 100;
 
+    // Conditionally render image
+    // Skip image if "No Accident" or if URL is invalid/fallback
+    let imgHtml = '';
+    const hasValidImage = incident.imageUrl && 
+                          incident.imageUrl !== 'null' && 
+                          !incident.imageUrl.includes('/null') &&
+                          !incident.imageUrl.includes('no-image.png');
+
+    if (!isNoAccident && hasValidImage) {
+         imgHtml = `<img src="${API_BASE + incident.imageUrl}" alt="Snapshot" onclick="event.stopPropagation(); openLightbox(this.src)" style="cursor: pointer;">`;
+    }
+
+    // Handle Location null
+    const locationDisplay = incident.location && incident.location !== 'null' ? incident.location : 'Detected from Video';
+
     card.innerHTML = `
-        <img src="${incident.imageUrl ? (API_BASE + incident.imageUrl) : 'https://via.placeholder.com/150'}" alt="Snapshot" onclick="event.stopPropagation(); openLightbox(this.src)" style="cursor: pointer;">
+        ${imgHtml}
         <div class="info">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
                 <span class="badge ${typeClass}">${incident.type}</span>
@@ -464,7 +489,7 @@ function addToFeed(incident, isNew = false) {
             </div>
             <p class="description" data-full="${description.replace(/"/g, '&quot;')}">${shortDesc}</p>
             ${hasMore ? '<button class="read-more-btn" onclick="event.stopPropagation(); toggleDescription(this)">Xem chi tiết ▼</button>' : ''}
-            <span class="location">📍 ${incident.location}</span>
+            <span class="location">📍 ${locationDisplay}</span>
         </div>
     `;
     // Make card clickable for history playback
@@ -545,6 +570,7 @@ function loadIncidentIntoView(incident) {
              try {
                  const snapshotArray = JSON.parse(incident.snapshotUrls);
                  snapshotArray.forEach(url => {
+                     if (!url || url.includes('null') || url.includes('no-image')) return;
                      const img = document.createElement('img');
                      img.src = API_BASE + url;
                      img.style.height = '150px';
@@ -556,11 +582,13 @@ function loadIncidentIntoView(incident) {
              }
          } else if(incident.imageUrl) {
              // Fallback to single image
-             const img = document.createElement('img');
-             img.src = API_BASE + incident.imageUrl;
-             img.style.maxWidth = '200px';
-             img.style.border = '1px solid #ccc';
-             reportSnapshots.appendChild(img);
+             if (incident.imageUrl && !incident.imageUrl.includes('null')) {
+                 const img = document.createElement('img');
+                 img.src = API_BASE + incident.imageUrl;
+                 img.style.maxWidth = '200px';
+                 img.style.border = '1px solid #ccc';
+                 reportSnapshots.appendChild(img);
+             }
          }
     } else {
         aiReportContainer.classList.add('hidden');
@@ -590,6 +618,7 @@ function loadIncidentIntoView(incident) {
             const labels = ["Before", "During", "After"];
             
             snapshotArray.forEach((url, idx) => {
+                if (!url || url.includes('null')) return; // Check for valid URL
                 const wrap = document.createElement('div');
                 wrap.style.textAlign = 'center';
                 const label = (idx < 3) ? labels[idx] : `Snapshot ${idx+1}`;
@@ -607,7 +636,7 @@ function loadIncidentIntoView(incident) {
                 gallery.appendChild(wrap);
             }
         }
-    } else if (incident.imageUrl) {
+    } else if (incident.imageUrl && !incident.imageUrl.includes('null')) {
         // Fallback to single legacy image
         const wrap = document.createElement('div');
         wrap.innerHTML = `<img src="${API_BASE + incident.imageUrl}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">`;
@@ -908,6 +937,8 @@ async function pollStatus(taskId) {
             if (linkData.snapshots && linkData.snapshots.length > 0) {
                 const labels = ["Before", "During", "After"];
                 linkData.snapshots.forEach((url, idx) => {
+                    if (!url || url.includes('null')) return;
+                    
                     const wrap = document.createElement('div');
                     wrap.style.textAlign = 'center';
                     
@@ -918,7 +949,7 @@ async function pollStatus(taskId) {
                         <img src="${API_BASE + url}" style="width:160px; height:auto; border-radius:4px; border:1px solid #555; cursor: pointer;" onclick="openLightbox(this.src)">
                         <div style="font-size:0.8em; color:#aaa; margin-top:2px;">${label}</div>
                     `;
-                gallery.appendChild(wrap);
+                    gallery.appendChild(wrap);
                     
                     // Clone for Report PDF view
                     const clone = document.createElement('img');

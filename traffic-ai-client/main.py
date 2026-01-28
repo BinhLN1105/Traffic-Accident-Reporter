@@ -66,12 +66,20 @@ class ReportWorker(QThread):
         try:
              # Truyền incident_type="vehicle accident" rõ ràng
              # Giải nén danh sách ảnh chụp để khớp với chữ ký hàm (trước, trong, sau)
-             if len(self.snapshots) >= 3:
+             # Update: Hỗ trợ trường hợp không có snapshot (No Accident)
+             p1, p2, p3 = None, None, None
+             if self.snapshots and len(self.snapshots) >= 3:
                  p1, p2, p3 = self.snapshots[:3]
-                 result = self.generator.generate_report(p1, p2, p3, "vehicle accident", self.video_source)
-                 self.finished.emit(result)
-             else:
-                 self.finished.emit({'success': False, 'report': "Invalid snapshots"})
+             
+             # Nếu không có incident_type được truyền vào, tự động xác định
+             type_to_send = "vehicle accident"
+             if not p1 and not p2 and not p3:
+                 type_to_send = "No Accident"
+
+             # Nếu incident_id được truyền vào constructor, ta có thể dùng nó (tùy logic)
+             # Ở đây ta gọi generator
+             result = self.generator.generate_report(p1, p2, p3, type_to_send, self.video_source)
+             self.finished.emit(result)
         except Exception as e:
              print(f"ReportWorker API Error: {e}")
              self.finished.emit({'success': False, 'report': str(e)})
@@ -1206,6 +1214,7 @@ class TrafficMonitorApp(QMainWindow):
              video_path = result_data.get('original_file') # Use original input
              
              # Run Worker
+             # Fix: Nếu không có snapshot, vẫn chạy worker để báo cáo "No Accident"
              worker = ReportWorker(self.report_generator, snapshots, None, video_path)
              
              # Handle completion closure to update specific result
@@ -1393,8 +1402,8 @@ class TrafficMonitorApp(QMainWindow):
         # Check if we have valid snapshots
         valid_snaps = [p for p in self.snapshot_paths if p and os.path.exists(p)]
         if not valid_snaps:
-            self.log("⚠️ Need at least one snapshot for report")
-            return
+            self.log("⚠️ No snapshots found. Converting to 'No Accident' report...")
+            # return # REMOVED to allow No Accident report
             
         current_vid = None
         
@@ -1450,7 +1459,8 @@ class TrafficMonitorApp(QMainWindow):
             
             # Update UI buttons immediately
             self.btn_view_report.setEnabled(True)
-            self.btn_view_report.setText(f"View Report (#{result['incident_id']})")
+            report_title = "No Accident" if result.get('report') and "No accident detected" in result.get('report') else f"#{result['incident_id']}"
+            self.btn_view_report.setText(f"View Report ({report_title})")
             
             self.show_report_dialog(result['report'], [path_before, path_during, path_after])
         else:

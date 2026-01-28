@@ -131,6 +131,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
         # Cần phát hiện liên tiếp trong một khoảng thời gian để xác nhận
         ACCIDENT_DURATION_THRESHOLD = 0.5  # Cần 0.5 giây để xác thực
         CONFIRMATION_FRAMES = int(fps * ACCIDENT_DURATION_THRESHOLD)
+        MIN_FALLBACK_STREAK = 4 # Fallback cần ít nhất 4 frame liên tiếp (~0.13s)
         current_accident_streak = 0  # Đếm số frame liên tiếp phát hiện sự cố
         
         # Buffer lưu trữ các frame gần đây (dùng deque để tự động xóa frame cũ)
@@ -210,6 +211,7 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                 last_boxes = []  # Xóa cache cũ để lưu kết quả mới
                 
                 if results:
+                    # 1. Tìm detection tốt nhất trong frame hiện tại trước
                     for result in results:
                         for box in result.boxes:
                             coords = tuple(map(int, box.xyxy[0]))  # Tọa độ bounding box
@@ -221,28 +223,11 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                             
                             # Kiểm tra label và độ tin cậy
                             if label.lower() in target_labels and conf > confidence_threshold:
-                                detection_found_in_this_frame = True
-                                current_frame_label = label
-                                current_frame_conf = conf
-                                
-                                # Cập nhật ứng viên dự phòng (phát hiện tốt nhất)
-                                if conf > best_fallback_conf:
-                                    best_fallback_conf = conf
-                                    fb_before = frame_buffer[0].copy() if frame_buffer else frame.copy()
-                                    
-                                    # LOGIC TUA NGƯỢC CHO CẢ DỰ PHÒNG
-                                    # Ngay cả khi dự phòng, chúng ta muốn khung hình từ 1.5s trước đó nếu có thể
-                                    # Để bắt được khoảnh khắc va chạm tốt hơn
-                                    f_rewind_s = 1.5
-                                    f_frames_back = int(fps * f_rewind_s)
-                                    if len(frame_buffer) > f_frames_back:
-                                        fb_during = frame_buffer[-f_frames_back].copy()
-                                    elif frame_buffer:
-                                        fb_during = frame_buffer[0].copy()
-                                    else:
-                                        fb_during = frame.copy()
-                                        
-                                    best_fallback_data = (label, fb_before, fb_during)
+                                # Ưu tiên label có độ tin cậy cao nhất trong frame
+                                if conf > current_frame_conf:
+                                    detection_found_in_this_frame = True
+                                    current_frame_label = label
+                                    current_frame_conf = conf
 
             else:
                 # Dùng lại kết quả từ cache (Skip frame)
@@ -250,9 +235,11 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                 for box_data in last_boxes:
                     (coords, label, conf) = box_data
                     if label.lower() in target_labels and conf > confidence_threshold:
-                        detection_found_in_this_frame = True
-                        current_frame_label = label
-                        current_frame_conf = conf
+                        # Ưu tiên label có độ tin cậy cao nhất
+                        if conf > current_frame_conf:
+                            detection_found_in_this_frame = True
+                            current_frame_label = label
+                            current_frame_conf = conf
 
             # --- VẼ HÌNH ---
             annotated_frame = frame.copy()
@@ -274,6 +261,25 @@ def process_video_task(input_path, output_path, job_id, is_realtime, model_type=
                     "confidence": current_frame_conf
                 })
                 current_accident_streak += 1
+                
+                # --- LOGIC FALLBACK MỚI (Mini-Streak) ---
+                # Chỉ cập nhật Fallback khi Streak đã đạt ngưỡng tối thiểu
+                if current_accident_streak >= MIN_FALLBACK_STREAK:
+                     if current_frame_conf > best_fallback_conf:
+                        best_fallback_conf = current_frame_conf
+                        fb_before = frame_buffer[0].copy() if frame_buffer else frame.copy()
+                        
+                        # LOGIC TUA NGƯỢC CHO CẢ DỰ PHÒNG
+                        f_rewind_s = 1.5
+                        f_frames_back = int(fps * f_rewind_s)
+                        if len(frame_buffer) > f_frames_back:
+                            fb_during = frame_buffer[-f_frames_back].copy()
+                        elif frame_buffer:
+                            fb_during = frame_buffer[0].copy()
+                        else:
+                            fb_during = frame.copy()
+                            
+                        best_fallback_data = (current_frame_label, fb_before, fb_during)
                 
                 if snapshot_state == 'SEARCHING':
                     if current_accident_streak >= CONFIRMATION_FRAMES:
@@ -441,12 +447,15 @@ def report_to_backend(snapshot_paths, label, video_path=None):
     try:
         print(f"Uploading incident '{label}' to Backend...")
         
-        # Mở các file ảnh để gửi
-        files = {
-            'imageBefore': open(snapshot_paths[0], 'rb'),
-            'imageDuring': open(snapshot_paths[1], 'rb'),
-            'imageAfter': open(snapshot_paths[2], 'rb'),
-        }
+        # Mở các file ảnh để gửi (NẾU CÓ)
+        files = {}
+        
+        if snapshot_paths and len(snapshot_paths) >= 1 and os.path.exists(snapshot_paths[0]):
+             files['imageBefore'] = open(snapshot_paths[0], 'rb')
+        if snapshot_paths and len(snapshot_paths) >= 2 and os.path.exists(snapshot_paths[1]):
+             files['imageDuring'] = open(snapshot_paths[1], 'rb')
+        if snapshot_paths and len(snapshot_paths) >= 3 and os.path.exists(snapshot_paths[2]):
+             files['imageAfter'] = open(snapshot_paths[2], 'rb')
         
         # Thêm video nếu có và file tồn tại
         if video_path and os.path.exists(video_path):
@@ -454,14 +463,15 @@ def report_to_backend(snapshot_paths, label, video_path=None):
         
         data = {
             'type': label,
-            'description': f"Auto-detected {label} by Python Analysis Server"
+            'description': f"Auto-detected {label}" if label != "No Accident" else "Video analyzed: No accident detected."
         }
         
         response = requests.post(API_URL, files=files, data=data)
         
         # Đóng tất cả file đã mở
         for f in files.values():
-            f.close()
+            if hasattr(f, 'close'):
+                f.close()
             
         if response.status_code == 200:
             result = response.json()

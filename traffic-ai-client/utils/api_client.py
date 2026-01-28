@@ -43,14 +43,15 @@ class APIClient:
         url = f"{self.base_url}/incidents/report"
         
         try:
-            # Chuẩn bị dữ liệu multipart form với 3 ảnh
-            # Lưu ý: Không thể dùng with open() cho nhiều file trong một block dễ dàng
-            # Nên mở file và đảm bảo đóng chúng sau khi dùng
-            files = {
-                'imageBefore': open(before_path, 'rb'),
-                'imageDuring': open(during_path, 'rb'),
-                'imageAfter': open(after_path, 'rb')
-            }
+            # Chuẩn bị dữ liệu multipart form
+            files = {}
+            
+            if before_path and os.path.exists(before_path):
+                files['imageBefore'] = open(before_path, 'rb')
+            if during_path and os.path.exists(during_path):
+                files['imageDuring'] = open(during_path, 'rb')
+            if after_path and os.path.exists(after_path):
+                files['imageAfter'] = open(after_path, 'rb')
             
             # Thêm video nếu có và file tồn tại
             if video_path and os.path.exists(video_path):
@@ -58,7 +59,7 @@ class APIClient:
             
             data = {
                 'type': incident_type,
-                'description': f'Auto-detected {incident_type}'
+                'description': f'Auto-detected {incident_type}' if incident_type != 'No Accident' else 'Video analyzed: No accident detected.'
             }
             
             # Tăng timeout cho việc upload video (có thể lớn)
@@ -66,7 +67,10 @@ class APIClient:
             
             # Đóng tất cả file đã mở
             for f in files.values():
-                f.close()
+                if hasattr(f, 'close'):
+                    f.close()
+                elif isinstance(f, tuple) and len(f) > 1 and hasattr(f[1], 'close'):
+                    f[1].close()
             
             if response.status_code == 200 or response.status_code == 201:
                 result = response.json()
