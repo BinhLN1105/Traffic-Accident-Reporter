@@ -18,39 +18,7 @@ from utils.api_client import APIClient
 from PyQt6.QtWidgets import QCheckBox
 from PyQt6.QtCore import pyqtSignal, QThread
 
-class ReportWorker(QThread):
-    finished = pyqtSignal(dict)
-    
-    def __init__(self, generator, snapshot_paths, incident_id, video_path=None):
-        super().__init__()
-        self.generator = generator
-        self.snapshot_paths = snapshot_paths
-        self.incident_id = incident_id
-        self.video_path = video_path
 
-    def run(self):
-        """
-        Chạy worker trong background thread để tạo báo cáo
-        Không chặn UI thread
-        """
-        try:
-            # Tạo báo cáo trong background
-            # Yêu cầu: before, during, after, incident_type, video_path
-            
-            # Đảm bảo có đủ 3 snapshot (thêm None nếu thiếu)
-            safe_snaps = self.snapshot_paths + [None] * (3 - len(self.snapshot_paths))
-            incident_type = "vehicle accident" 
-            
-            result = self.generator.generate_report(
-                safe_snaps[0], 
-                safe_snaps[1],
-                safe_snaps[2],
-                incident_type,
-                video_path=self.video_path
-            )
-            self.finished.emit(result)
-        except Exception as e:
-            self.finished.emit({'success': False, 'report': str(e)})
 
 class ReportWorker(QThread):
     finished = pyqtSignal(dict)
@@ -84,6 +52,25 @@ class ReportWorker(QThread):
              print(f"ReportWorker API Error: {e}")
              self.finished.emit({'success': False, 'report': str(e)})
 
+class HistoryLoaderThread(QThread):
+    """
+    Thread tải lịch sử từ backend để không làm đơ UI
+    """
+    finished = pyqtSignal(list)
+    
+    def __init__(self, api_client, limit=100):
+        super().__init__()
+        self.api_client = api_client
+        self.limit = limit
+        
+    def run(self):
+        try:
+            incidents = self.api_client.get_history(limit=self.limit)
+            self.finished.emit(incidents)
+        except Exception as e:
+            print(f"History load error: {e}")
+            self.finished.emit([])
+
 class TrafficMonitorApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -100,6 +87,7 @@ class TrafficMonitorApp(QMainWindow):
         self.is_dark_mode = True  # Theo dõi trạng thái theme (sáng/tối)
         self.api_client = APIClient()  # Client để gọi API backend
         self.thread = None  # Thread xử lý phát hiện
+        self.auto_pause_enabled = True # Tự động tạm dừng khi chuyển tab
         
         # Khởi tạo bộ sinh báo cáo AI với API client
         from utils.report_generator import ReportGenerator
@@ -130,6 +118,9 @@ class TrafficMonitorApp(QMainWindow):
         
         # Thêm vào góc tab
         self.tabs.setCornerWidget(self.btn_theme, Qt.Corner.TopRightCorner)
+        
+        # Bắt sự kiện chuyển tab để tối ưu hiệu năng
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         
         main_layout.addWidget(self.tabs)
         
@@ -686,38 +677,82 @@ class TrafficMonitorApp(QMainWindow):
         self.load_history()
     
     def load_history(self):
-        """Load detection history from Java backend"""
-        self.log("📊 Loading history from backend...")
+        """Load detection history from Java backend (Asynchronous)"""
+        # Disable button to prevent double click
+        sender = self.sender()
+        if isinstance(sender, QPushButton):
+            sender.setEnabled(False)
+            
+        self.history_table.setRowCount(0) # Clear
         
-        incidents = self.api_client.get_history(limit=100)
+        # Show loading state (optional, or just log)
+        self.log("⏳ Loading history from backend... (Background)")
         
-        self.history_table.setRowCount(0)  # Clear existing
+        # Create and run loader thread
+        self.history_loader = HistoryLoaderThread(self.api_client, limit=100)
         
-        for incident in incidents:
-            row = self.history_table.rowCount()
-            self.history_table.insertRow(row)
+        def on_history_loaded(incidents):
+            self.log(f"✅ Loaded {len(incidents)} historical incidents")
             
-            # ID
-            self.history_table.setItem(row, 0, QTableWidgetItem(str(incident.get('id', ''))))
+            self.history_table.setRowCount(0)
+            for incident in incidents:
+                row = self.history_table.rowCount()
+                self.history_table.insertRow(row)
+                
+                # ID
+                self.history_table.setItem(row, 0, QTableWidgetItem(str(incident.get('id', ''))))
+                
+                # Timestamp
+                timestamp = incident.get('timestamp', '')
+                self.history_table.setItem(row, 1, QTableWidgetItem(timestamp))
+                
+                # Type
+                incident_type = incident.get('type', 'Unknown')
+                self.history_table.setItem(row, 2, QTableWidgetItem(incident_type))
+                
+                # Location
+                location = incident.get('location', 'N/A')
+                self.history_table.setItem(row, 3, QTableWidgetItem(location))
+                
+                # View Report button
+                btn_view = QPushButton("View")
+                btn_view.clicked.connect(lambda checked, inc=incident: self.view_incident_detail(inc))
+                self.history_table.setCellWidget(row, 4, btn_view)
             
-            # Timestamp
-            timestamp = incident.get('timestamp', '')
-            self.history_table.setItem(row, 1, QTableWidgetItem(timestamp))
-            
-            # Type
-            incident_type = incident.get('type', 'Unknown')
-            self.history_table.setItem(row, 2, QTableWidgetItem(incident_type))
-            
-            # Location
-            location = incident.get('location', 'N/A')
-            self.history_table.setItem(row, 3, QTableWidgetItem(location))
-            
-            # View Report button
-            btn_view = QPushButton("View")
-            btn_view.clicked.connect(lambda checked, inc=incident: self.view_incident_detail(inc))
-            self.history_table.setCellWidget(row, 4, btn_view)
-        
-        self.log(f"✅ Loaded {len(incidents)} historical incidents")
+            # Re-enable button
+            if isinstance(sender, QPushButton):
+                sender.setEnabled(True)
+                
+        self.history_loader.finished.connect(on_history_loaded)
+        self.history_loader.start()
+
+    def on_tab_changed(self, index):
+        """
+        Xử lý khi chuyển tab:
+        - Nếu rời tab Live (index 0): Tạm dừng detection để tiết kiệm tài nguyên
+        - Nếu quay lại tab Live: Tiếp tục detection
+        """
+        if not self.thread or not self.thread.isRunning():
+            return
+
+        if index == 0: # Live Tab
+            if self.auto_pause_enabled and self.thread.paused:
+                self.log("▶️ Resuming Live Detection...")
+                self.thread.pause() # Toggle pause off
+                # Reconnect signal updates
+                try: 
+                    self.thread.change_pixmap_signal.disconnect() 
+                except: pass
+                self.thread.change_pixmap_signal.connect(self.update_image)
+                
+        else: # Other Tabs (Analyst, History)
+            if self.auto_pause_enabled and not self.thread.paused:
+                self.log("⏸️ Pausing Live Detection (Background Mode)...")
+                self.thread.pause() # Toggle pause on
+                # Disconnect signal to stop UI updates
+                try:
+                    self.thread.change_pixmap_signal.disconnect(self.update_image)
+                except: pass
     
     def view_incident_detail(self, incident):
         """Show incident detail dialog"""
